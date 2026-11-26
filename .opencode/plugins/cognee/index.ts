@@ -12,7 +12,7 @@
  */
 
 import { createHash } from "node:crypto"
-import { Plugin } from "@opencode/plugin"
+import type { Plugin as PluginNS } from "@opencode/plugin"
 
 export const DEFAULT_IDENTITY_KEY = "auth.user_id"
 export const DEFAULT_DATASET_PREFIX = "u_"
@@ -397,7 +397,7 @@ function requestMessageText(message: unknown): string {
   return ""
 }
 
-export default Plugin.define({
+const plugin: PluginNS.Plugin = {
   id: "cognee",
   async setup(ctx) {
     const cfg = loadConfig()
@@ -577,4 +577,6 @@ export default Plugin.define({
       `ready: base=${cfg.baseUrl} users=${Object.keys(cfg.users).join(",") || "(none)"} capture=${cfg.capture} recall=${cfg.recall}`,
     )
   },
-})
+}
+
+export default plugin
