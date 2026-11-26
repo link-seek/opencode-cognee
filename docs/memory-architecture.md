@@ -655,6 +655,7 @@ plugin（server 端）
 
 ## 16. 参考（官方）
 
+- **Cognee 现有功能清单（自带/不自带）：[`cognee-capabilities.md`](cognee-capabilities.md)**
 - Anthropic — Context engineering: <https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents>
 - Anthropic — Claude Code best practices: <https://www.anthropic.com/engineering/claude-code-best-practices>
 - Anthropic — Demystifying evals for AI agents: <https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents>
