@@ -410,29 +410,21 @@ recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
 - 数据按 `<user_uuid>/<dataset_uuid>` 落盘（官方文档），**不是查询期过滤**。
 - 共享 dataset 用 `share` 权限授予；**禁止用同名 dataset 约定隔离**。
 
-### 7.3 私有 → 公共的晋升流水线
+### 7.3 私有 → 公共：一条命令 + 人工审核（不做平台）
 
 ```
-private episode/topic
-   │ ① 候选：蒸馏出可复用结论（去人名/路径/一次性细节）
-   ▼
-candidate (private, status=pending)
-   │ ② 抽象：泛化措辞、去标识、只保留证据哈希（不复制原文）
-   │ ③ 门槛：≥2 个独立来源 或 同一结论重复 ≥3 次；置信度 ≥0.8
-   ▼
-review queue
-   │ ④ 审核：owner + knowledge_reviewer；看 diff 与证据
-   ▼
-org_common (status=published, derived_from_hash, reviewed_by, published_at)
-   │ ⑤ 可撤销：tombstone + 从 org 移除；private 源不受影响
+用户/评审者执行 promote(id, target=team|org)
+  ① 取条目（private）
+  ② 抽象：一次 LLM 改写（去人名/路径/一次性细节），出 diff
+  ③ 人工确认（team: team_lead；org: knowledge_reviewer）
+  ④ 写入目标 dataset（带 derived_from_hash / reviewer / ts）
 ```
 
-硬规则：
-
-- 晋升**只写抽象后的文本**，不复制 private 原文；`derived_from` 只存哈希，避免反查。
-- 晋升**必须人工审核**；模型只能生成候选，不能直接写 `org_common`。
-- 撤销/删除要传播：org 条目 tombstone，召回不再返回；审计记录保留。
-- 冲突：org 与 private 冲突时，个人回答以 private 为准；org 条目标 `conflicted` 进复核。
+- 默认私有；`promote` 是**显式动作**，不是后台流水线。
+- 模型只生成抽象文本与 diff，**不能自己发布**。
+- team 级可以轻（lead 确认）；org 级必须 reviewer。
+- 撤销：删目标条目 + 留审计；private 源不动。
+- 没有队列、没有 worker、没有独立服务；量大再加批处理。
 
 **Cognee 自带 vs 需要自写（关键区分）**：
 
@@ -441,40 +433,38 @@ org_common (status=published, derived_from_hash, reviewed_by, published_at)
 | 用户 / 角色 / 租户 | ✅ users/roles/tenants | 与 SSO 的映射、角色分配 |
 | 认证 | ✅ JWT（`POST /api/v1/auth/login`） | token broker（换取/缓存/轮换） |
 | 数据隔离 | ✅ 每 user/dataset 独立存储 | 无 |
-| dataset 权限 | ✅ read/write/delete/share | 谁有权 share/审批 |
+| dataset 权限 | ✅ read/write/delete/share | 谁有权 promote/审批 |
 | 共享整个 dataset | ✅ `share` | 共享范围/UI |
-| **单条知识晋升** | ❌ | 候选生成、抽象、门槛、审核、发布、撤销 |
-| 去标识化 | ❌（PII presort 只做扫描） | 脱敏/泛化 prompt + 校验 |
-| 审计 | 部分（搜索历史/JWT 日志） | 晋升审计、diff、revoke |
-| 冲突复核 | ✅ conflict review | 跨 scope 的冲突策略 |
+| **单条知识晋升** | ❌ | `promote` 命令 + 抽象 prompt + 审核（薄逻辑） |
+| 去标识化 | ❌（PII presort 只做扫描） | 一次 LLM 改写 + 人工确认 |
+| 审计 | 部分（搜索历史/JWT 日志） | 一行晋升记录（actor/source_hash/reviewer/ts） |
 
-> 一句话：**“谁能读哪个 dataset”是自带的；“把哪条私有知识抽象成公共知识”是我们写的。**
+> 一句话：**“谁能读哪个 dataset”是自带的；“把哪条私有知识抽象成公共知识”是一层薄策略。**
 > 直接把 private dataset `share` 给团队是自带能力，但那等于把全部私人内容暴露出去，不是“抽象晋升”。
 
-### 7.3.1 晋升流水线放在哪：不在 Cognee 里，是我们的独立服务/任务
+### 7.3.1 归属：Cognee 管分区，晋升只是一层薄策略
 
-```
-OpenCode Pod                          promotion service（我们写，集群内）              Cognee
-┌──────────────────────┐              ┌──────────────────────────────┐              ┌──────────────┐
-│ plugin               │  候选(已抽象) │ 队列 / 去重 / 门槛 / 审核状态  │  service token│ org_common   │
-│  capture → abstract  │ ───────────► │ audit / revoke               │ ───────────► │ (reviewer 写)│
-│  (原文不出 private)   │              │ reviewer CLI/UI              │              │              │
-└──────────────────────┘              └──────────────────────────────┘              └──────────────┘
-```
+| 部分 | 归属 | 说明 |
+|---|---|---|
+| private/team/org dataset + ACL | **Cognee 自带** | 不用写 |
+| `promote` 命令 + 抽象 prompt + 审核 | **插件/CLI 里的一小段逻辑** | 不是服务 |
+| 晋升审计 | 一行 JSON 记录（或 `promotions.jsonl`） | 不用建系统 |
+| token broker（B 方案） | 独立小服务 | **只负责身份，不是晋升** |
 
-- **Cognee 不含工作流**：它只有 dataset + 权限；没有“候选/审核/发布/撤销”状态机。
-- **plugin 只做候选**：在用户 Pod 内用会话模型做抽象（去人名/路径/一次性细节），
-  **原文不离开 private dataset**，只把抽象后的文本 + 证据哈希 + user/team 发给 promotion service。
-- **promotion service 是唯一持有 `org_common` 写权限的服务账号**：负责队列、去重、门槛、
-  审核、发布、撤销、审计；reviewer 通过 CLI/UI 操作。
-- **部署形态**：
-  - MVP：K8s CronJob（批量抽象/去重）+ CLI（审核/发布），无长期服务；
-  - 完整：Deployment（review API/UI）+ 定时 worker；队列可用 Postgres/SQLite（独立于 Cognee）。
-- **为什么不写进 Cognee**：会 fork 上游、升级耦合；RBAC 与审计状态也不该塞进存储层。
-- **为什么不全部塞进插件**：插件随 OpenCode 重启、没有独立 RBAC；长 LLM 任务会占会话资源；
-  多实例时队列/审核必须共享。
+- 不需要 promotion service、队列、worker、review UI；CLI 足够。
+- 只有“量大到需要批量/多人审核”时，才考虑加一个定时任务。
+- 通用场景的规则（什么算可公开、怎么脱敏）由人来写、来审——工具不该替你做价值判断。
 
-> 所以准确说法：**晋升流水线是“软件外面”的，但不是第三方 SaaS——是我们自己跑在集群里的一个服务/任务。**
+**Cognee 自带前端（可选，不承担晋升）**：
+
+- `cognee-frontend`（Next.js），镜像 `cognee/cognee-ui`，端口 3000，docker-compose `--profile ui`；
+- 有登录、datasets 列表/详情/上传、graph、search、sessions、settings、API keys，
+  以及 `ShareAccessModal` / 权限模块（dataset access、groups、workspace admins）；
+- 官方注明 UI 仍是 **WIP**，只覆盖最小功能；另可用 `cognee-cli visualize` 出单文件离线 HTML 图；
+- 对我们的用法：**UI 只做“看/浏览/分享”**；晋升审核仍走 `promote` 命令 + 人工确认，
+  不把 UI 当工作流引擎，也不为它写插件。
+
+> 所以准确说法：**Cognee 提供“私有/公共分区 + 一个可选前端”，晋升逻辑是我们写的几行策略 + 一次人工确认，不是一套平台。**
 
 ### 7.4 身份来源（必须先解决）
 
