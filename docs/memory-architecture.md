@@ -434,6 +434,23 @@ org_common (status=published, derived_from_hash, reviewed_by, published_at)
 - 撤销/删除要传播：org 条目 tombstone，召回不再返回；审计记录保留。
 - 冲突：org 与 private 冲突时，个人回答以 private 为准；org 条目标 `conflicted` 进复核。
 
+**Cognee 自带 vs 需要自写（关键区分）**：
+
+| 能力 | Cognee 自带 | 需要自写 |
+|---|---|---|
+| 用户 / 角色 / 租户 | ✅ users/roles/tenants | 与 SSO 的映射、角色分配 |
+| 认证 | ✅ JWT（`POST /api/v1/auth/login`） | token broker（换取/缓存/轮换） |
+| 数据隔离 | ✅ 每 user/dataset 独立存储 | 无 |
+| dataset 权限 | ✅ read/write/delete/share | 谁有权 share/审批 |
+| 共享整个 dataset | ✅ `share` | 共享范围/UI |
+| **单条知识晋升** | ❌ | 候选生成、抽象、门槛、审核、发布、撤销 |
+| 去标识化 | ❌（PII presort 只做扫描） | 脱敏/泛化 prompt + 校验 |
+| 审计 | 部分（搜索历史/JWT 日志） | 晋升审计、diff、revoke |
+| 冲突复核 | ✅ conflict review | 跨 scope 的冲突策略 |
+
+> 一句话：**“谁能读哪个 dataset”是自带的；“把哪条私有知识抽象成公共知识”是我们写的。**
+> 直接把 private dataset `share` 给团队是自带能力，但那等于把全部私人内容暴露出去，不是“抽象晋升”。
+
 ### 7.4 身份来源（必须先解决）
 
 OpenCode OSS 的 server auth 是**单账号**（`OPENCODE_SERVER_USERNAME/PASSWORD`），没有内建多用户。
@@ -446,7 +463,32 @@ OpenCode OSS 的 server auth 是**单账号**（`OPENCODE_SERVER_USERNAME/PASSWO
 
 **不接受**：共享实例里靠 `USER_ID` 环境变量或模型传参区分用户——那是“约定隔离”，不是权限隔离。
 
-> 如果 team 实例是多人共用同一个登录，必须先做方案 B，或在 team 内改成一人一 pod。
+**B 的落地方式（关键：不能走 MCP）**：
+
+```
+SSO gateway (oauth2-proxy / Authentik)
+  ├─ 认证用户
+  ├─ 调 OpenCode API：session.instructions.entry.put(key="auth.user_id", value=<sso_sub>)
+  └─ 转发 prompt
+        │
+plugin（server 端）
+  ├─ 在 prompt/context hook 读 instructions.entry("auth.user_id")
+  ├─ 调 token broker（mTLS）→ 换取该用户的短期 Cognee JWT
+  └─ 用 JWT 调 Cognee REST（不是 MCP）
+```
+
+- **为什么不能走 MCP**：Cognee MCP 的 API mode 是“一个 token = 一个用户”，MCP server 进程级 token
+  无法按请求切换用户；多用户必须走 REST + 每用户 JWT。
+- **身份载体**：`session.instructions.entry`（2.3.0 已验证类型：`sessionID/key/value`）。
+  只有网关能调 OpenCode API（NetworkPolicy），插件只信这个 entry，**不信 prompt 文本里的 user_id**。
+  若该实验 API 变动，退化为“网关维护 session→user 映射表，插件按 sessionID 查”。
+- **token broker**（我们写的唯一新服务）：
+  - 每个 SSO 用户映射一个 Cognee 用户（随机密码存 Secret/外部密钥库）；
+  - 代登录拿 JWT（`POST /api/v1/auth/login`），缓存到过期（`JWT_LIFETIME_SECONDS=3600`）；
+  - 用户禁用/删除时吊销 token、删 private dataset。
+- **Cognee 侧配置**：`FASTAPI_USERS_JWT_SECRET` 全 pod 一致；`HASH_API_KEY=true`；
+  `COGNEE_LOG_SEARCH_HISTORY=false`（避免问答明文入库）；`TELEMETRY_DISABLED=true`。
+- **网络**：只允许网关 → OpenCode API；plugin → token broker；token broker → Cognee；客户端不可直连 Cognee。
 
 ### 7.5 子 agent、用户生命周期与密钥
 
