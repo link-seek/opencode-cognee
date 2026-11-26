@@ -203,7 +203,7 @@ test("buildTranscript keeps user/assistant text and drops tool output", () => {
 
 test("renderMemory keeps a clipped long hit", () => {
   const out = renderMemory([{ text: "x".repeat(5000) }], 4000)
-  assert.match(out, /x{600}/)
+  assert.match(out, /x{240}/)
   assert.ok(out.length < 4200)
 })
 

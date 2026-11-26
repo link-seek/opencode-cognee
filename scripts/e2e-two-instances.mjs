@@ -88,12 +88,15 @@ async function waitAssistant(base, password, sessionID, timeoutMs = 180_000) {
   while (Date.now() < deadline) {
     const { body } = await api(base, password, `/api/session/${sessionID}/context`)
     const messages = body.data ?? []
-    const last = messages[messages.length - 1]
-    if (last?.type === "assistant" && last.time?.completed && last.finish !== "tool-calls") {
-      return last.content
+    const last = [...messages]
+      .reverse()
+      .find((m) => m.type === "assistant" && m.time?.completed && m.finish !== "tool-calls")
+    if (last) {
+      const text = last.content
         .filter((p) => p.type === "text")
         .map((p) => p.text)
         .join("\n")
+      if (text.trim()) return text
     }
     await new Promise((r) => setTimeout(r, 2_000))
   }
@@ -127,7 +130,7 @@ async function recall(token, ds, query) {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ query, datasetIds: [ds], searchType: "CHUNKS", onlyContext: true, topK: 5 }),
-    signal: AbortSignal.timeout(40_000),
+    signal: AbortSignal.timeout(60_000),
   })
   const text = await res.text()
   return { status: res.status, body: text ? JSON.parse(text) : [] }
@@ -153,7 +156,7 @@ async function main() {
     A,
     A_PW,
     s1,
-    `请记住这个项目事实：项目徽章编号是 ${SECRET}，部署在 k3s 上使用 Flux。只回复 OK。`,
+    `请记住这个项目事实：生产集群的维护窗口编号是 ${SECRET}，窗口为每周日 03:00-04:00。只回复 OK。`,
   )
   const a1 = await waitAssistant(A, A_PW, s1)
   check("A[xie] assistant replied", Boolean(a1), a1.slice(0, 80))
@@ -168,6 +171,10 @@ async function main() {
     await new Promise((res) => setTimeout(res, 5_000))
   }
   check("capture reached Cognee", hit, hit ? "secret found in u_xieyucheng" : "timeout")
+  if (hit) {
+    // Let the background graph extraction finish so the API is not blocked for the cross-instance recall.
+    await new Promise((res) => setTimeout(res, 30_000))
+  }
 
   // 3. Same identity on instance B -> recall.
   const s2 = await createSession(B, B_PW, "e2e same identity")
