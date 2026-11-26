@@ -152,6 +152,8 @@ Recall is injected as a **transient system message in `event.messages`**, not ap
 to `event.system`; the provider used in this deployment only retains the first system
 instruction part, while message-level system content is visible to the model. The same
 query reuses the cached block across tool continuations (one recall API call per turn).
+Each recalled hit is clipped to 240 characters; longer chunks otherwise append legacy
+batch text that makes the model treat the memory as ambiguous.
 
 Cognee side: `cognee-api` (REST, sole DB writer, port 8001) + `cognee-mcp` (API proxy,
 port 8000, existing `/mcp` contract), one `cognee-data` PVC, EBAC/JWT/hashed API keys.
