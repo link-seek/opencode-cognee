@@ -29,6 +29,42 @@ SSO/OIDC、AGENTS.md 策略分层、OpenCode 插件、定时任务、备份。
 
 ---
 
+## 1.1 操作面：4 个主操作之外还有什么
+
+“4 个主操作”是 v1.0 的**记忆 API**（remember / recall / improve / forget），不是全部可调用面。
+按官方文档的命名空间粗分，至少还有这些：
+
+| 类别 | 数量（约） | 代表操作 | 我们是否需要 |
+|---|---|---|---|
+| 记忆主操作 | 4 | `remember` / `recall` / `improve` / `forget` | ✅ 核心 |
+| 远程/迁移 | 3 | `serve` / `disconnect` / `push` | ⚪ 可选 |
+| 旧版底层 | 5 | `add` / `cognify` / `search` / `memify`（弃用）/ `delete` | ⚪ 迁移/底层 |
+| 文档更新 | 1 | `update`（按 diff 替换 chunk） | ⚪ 可选 |
+| 清理/维护 | 2+ | `prune_data` / `prune_system` | 🔧 运维 |
+| dataset 管理 | ~11 | `list_datasets` / `create_*` / `get_status` / `get_memory_status` / `list_data` / `find_data` / `delete_data` / `empty_dataset` / `delete_all` / `sparql` | ✅ 部分 |
+| 用户/租户/角色 | ~10 | `create_user` / `get_user*` / `get_users_in_tenant` / tenant/role 管理 | ✅ B 方案 |
+| 权限/ACL | ~5 | grant/revoke/list、`create_authorized_dataset` | ✅ B 方案 |
+| 认证/API key | ~6 | register/login/refresh/reset/verify、API key 创建/吊销 | ✅ token broker |
+| 会话 | ~7 | `get_session` / `delete_session` / `add_feedback` / `delete_feedback` / `distill_session` / stats / cost | ⚪ 可选 |
+| Ontology | ~3 | 上传/列出/删除 | ⚪ 可选 |
+| 集成 connector | ~5 | authorize / sync / resources / 删除连接 | ❌ 不用 |
+| 代码图 | ~15 | `query_facts` / `explore` / `traverse` / `impact_analysis` / `ask` … | ❌ 不用 |
+| MCP 工具 | ~8 | remember/recall/forget/code_search/cognify_status/search_tools/call_tool | ❌ 多用户走 REST |
+| 可观测/维护 | ~5 | pipeline runs / dataset status / activity / search history / migrations | 🔧 部分 |
+
+**结论**：不是“4 个”，而是 **4 个记忆主操作 + 约 40 个管理与扩展操作**。
+但对我们这个项目，真正要接的只有：
+
+1. `remember` / `recall` / `improve` / `forget`
+2. dataset 的创建/列表/状态/删除
+3. 用户 + 权限/ACL（B 方案）
+4. 认证/API key（token broker）
+5. 会话（可选，做“最近对话”时用）
+
+其余（legacy、serve/push、代码图、connectors、MCP、ontology）都不需要出现在第一期。
+
+---
+
 ## 2. Remember（自带）
 
 | 能力 | 说明 |
