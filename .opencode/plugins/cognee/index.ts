@@ -350,8 +350,10 @@ export function renderMemory(hits: RecallHit[], maxChars: number): string {
   hits.forEach((hit, i) => {
     const text = hit.text.replace(/\s+/g, " ").trim()
     if (!text) return
-    const line = `- (${i + 1}) ${text}`
-    if (used + line.length > maxChars) return
+    const remaining = maxChars - used
+    if (remaining < 60) return
+    const clipped = text.length > 600 ? text.slice(0, 600) + "…" : text
+    const line = `- (${i + 1}) ${clipped}`
     lines.push(line)
     used += line.length
   })

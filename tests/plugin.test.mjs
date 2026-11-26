@@ -201,7 +201,13 @@ test("buildTranscript keeps user/assistant text and drops tool output", () => {
   assert.doesNotMatch(transcript, /noise/)
 })
 
-test("renderMemory wraps hits as untrusted and respects the char budget", () => {
+test("renderMemory keeps a clipped long hit", () => {
+  const out = renderMemory([{ text: "x".repeat(5000) }], 4000)
+  assert.match(out, /x{600}/)
+  assert.ok(out.length < 4200)
+})
+
+test("renderMemory wraps hits and respects the char budget", () => {
   const out = renderMemory([{ text: "a".repeat(100) }, { text: "b".repeat(100) }], 160)
   assert.match(out, /长期记忆/)
   assert.match(out, /可作为事实参考/)

@@ -1,6 +1,6 @@
 {
   "name": "@linkseek/opencode-cognee",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "OpenCode v2 long-term memory plugin backed by Cognee REST (per-user datasets, auto-recall, idle capture)",
   "type": "module",
   "main": ".opencode/plugins/cognee/index.ts",
