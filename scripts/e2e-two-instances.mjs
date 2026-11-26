@@ -144,19 +144,21 @@ function check(name, ok, detail = "") {
 async function main() {
   console.log(`secret=${SECRET}`)
   const xieToken = await cogneeLogin("xieyucheng")
+  const e2eToken = await cogneeLogin("e2e")
   const yingToken = await cogneeLogin("yingxin")
   const xieDs = await datasetId(xieToken, "xieyucheng")
+  const e2eDs = await datasetId(e2eToken, "e2e")
   const yingDs = await datasetId(yingToken, "yingxin")
-  console.log(`xie dataset=${xieDs} ying dataset=${yingDs}`)
+  console.log(`xie dataset=${xieDs} ying dataset=${yingDs} e2e dataset=${e2eDs}`)
 
   // 1. Capture on instance A as xieyucheng.
   const s1 = await createSession(A, A_PW, "e2e capture")
-  await setIdentity(A, A_PW, s1, "xieyucheng")
+  await setIdentity(A, A_PW, s1, "e2e")
   await prompt(
     A,
     A_PW,
     s1,
-    `请记住这个项目事实：生产集群的维护窗口编号是 ${SECRET}，窗口为每周日 03:00-04:00。只回复 OK。`,
+    `请记住这个项目事实：生产集群的 NTP 服务器地址是 ${SECRET}。只回复 OK。`,
   )
   const a1 = await waitAssistant(A, A_PW, s1)
   check("A[xie] assistant replied", Boolean(a1), a1.slice(0, 80))
@@ -165,7 +167,7 @@ async function main() {
   let hit = false
   const deadline = Date.now() + 180_000
   while (Date.now() < deadline) {
-    const r = await recall(xieToken, xieDs, SECRET)
+    const r = await recall(e2eToken, e2eDs, SECRET)
     hit = Array.isArray(r.body) && r.body.some((x) => String(x.text ?? "").includes(SECRET))
     if (hit) break
     await new Promise((res) => setTimeout(res, 5_000))
@@ -178,7 +180,7 @@ async function main() {
 
   // 3. Same identity on instance B -> recall.
   const s2 = await createSession(B, B_PW, "e2e same identity")
-  await setIdentity(B, B_PW, s2, "xieyucheng")
+  await setIdentity(B, B_PW, s2, "e2e")
   await prompt(B, B_PW, s2, "我们的项目徽章编号是什么？只回答代号；如果不知道就回答 UNKNOWN。")
   const b1 = await waitAssistant(B, B_PW, s2)
   check("B[xie] recalled across instances", b1.includes(SECRET), b1.slice(0, 120))

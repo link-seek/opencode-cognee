@@ -352,7 +352,8 @@ export function renderMemory(hits: RecallHit[], maxChars: number): string {
     if (!text) return
     const remaining = maxChars - used
     if (remaining < 60) return
-    const clipped = text.length > 240 ? text.slice(0, 240) + "…" : text
+    const fact = text.split(/\s*##\s*/)[0].trim()
+    const clipped = fact.length > 240 ? fact.slice(0, 240) + "…" : fact
     const line = `- (${i + 1}) ${clipped}`
     lines.push(line)
     used += line.length
