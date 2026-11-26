@@ -618,12 +618,11 @@ plugin（server 端）
 
 | 阶段 | 交付 | 退出标准 |
 |---|---|---|
-| **P0 选型** | AgentMemory / CodeMem / Cognee bake-off（同一批 20–50 任务） | 有数据支撑的选型结论；许可/维护/降级评估通过 |
-| **P1 Foundation** | 采用选型结果：组件接入 或 Cognee 薄适配；policy 链、索引、捕获、首条召回 | 捕获成功率 ≥99%；召回 p95 <300ms；重启不丢 |
-| **P2 Distill & Review** | 夜间蒸馏、reconcile、review CLI、profile 更新 | 每条 topic 有 evidence；冲突 100% 进队列 |
-| **P3 Governance** | EBAC、备份/恢复、审计、删除/导出 | 越权测试通过；恢复演练通过 |
-| **P4 Scale & Eval** | 外部存储（PG+pgvector+Neo4j）、黄金集、CI 回归 | 多实例；指标达标 |
-| **P5 Cutover** | 离线回放 → 影子双写 → 灰度切流 → 下线 mem | C 阶段 1 周不劣于 mem |
+| **P0 验证** | Cognee EBAC 跨用户越权测试、前端多用户能力实测、`instructions.entry` 身份链路验证 | A 用户 token 读不到 B 的 dataset；身份能端到端传到插件 |
+| **P1 接入** | token broker；插件改 REST（每用户 JWT）；private dataset 捕获 + 首条召回 | 捕获 ≥99%；召回 p95 <300ms；重启不丢 |
+| **P2 晋升** | `promote` 命令 + 一次抽象 prompt + 人工审核；`t_<team>` / `org_common` 写入 | private→team→org 全链路可追溯、可撤销 |
+| **P3 治理** | 备份/恢复、保留期、审计、用户生命周期（创建/禁用/删除） | 恢复演练通过；删除用户可清 private + 撤销贡献 |
+| **P4 评估与迁移** | 20–50 任务黄金集、影子双写、灰度切流、下线 mem | 连续 1 周不劣于 mem；镜像 -360MB |
 
 ---
 
