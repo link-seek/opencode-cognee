@@ -53,7 +53,27 @@ Claude Code 把记忆拆成**两种作者、两层机制**：
   近期输入、证据），后续会话注入；官方把它当**状态**而不是配置。
 - 启示：**静态指令与生成记忆分离**；生成记忆要能“被看见、被关掉、被清理”。
 
-### 1.4 结论（六条硬原则）
+### 1.4 这四件事的官方最佳实践（不是我们拍的）
+
+| 关注点 | 官方实践（来源） | 我们的落点 |
+|---|---|---|
+| **蒸馏质量** | Anthropic *Context Engineering*：compaction 保留架构决策、未解 bug、实现细节，丢弃冗余工具输出；先最大化 recall 再提 precision；structured note-taking；subagent 只回 1–2K token 摘要 | episode schema 固定 Request/Outcome/Decisions/Errors；**工具原文不入库**；蒸馏 prompt 先 recall 后 precision；子会话只交摘要 |
+| **记什么** | Claude Code *Best Practices*：只写模型从仓库看不到的；同一个纠正出现两次才写；CLAUDE.md <200 行；能给检查就给检查命令 | 写入前“可推导性”过滤；**corrected-twice 作为晋升信号**；`MEMORY.md` 硬上限；验证命令写进 episode |
+| **对账** | Claude memory：定期审计矛盾、合并/删除过期、`/doctor prompt-audit`；memory 是建议不是强制 | reconcile 增加 **contradiction audit**；冲突进 review；规则变更只出 PR；policy 与 memory 分离 |
+| **评估** | Anthropic *Demystifying evals*：20–50 个真实任务起步；code/model/human 三类 grader；capability vs regression；pass@k / pass^k；balanced sets；读 transcript；稳定环境；partial credit | 黄金集 20–50/项目起步；命中用 deterministic grader，答案用 LLM rubric + 人工校准；回归集近 100%；**每周读失败 transcript** |
+| **治理** | Claude Code：deterministic（hooks/deny/managed settings）vs non-deterministic（memory）；硬规则不放 memory。Codex：managed hooks only、32KiB 上限、closest wins | 安全/权限/禁止事项走 hooks/permissions；memory 只做建议；org policy 只读；容量上限与 override 规则 |
+
+**一句话**：官方已经把“怎么蒸馏、记什么、怎么对账、怎么评估、怎么治理”写成可执行规范；
+我们只是把它们落到 OpenCode 的 hook 与 cognee 的存储上。任何“我们自己发明”的规则，
+都应该先在这四份文档里找依据，找不到才新增。
+
+来源：
+- Anthropic — Context engineering: <https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents>
+- Anthropic — Claude Code best practices: <https://www.anthropic.com/engineering/claude-code-best-practices>
+- Anthropic — Demystifying evals for AI agents: <https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents>
+- OpenAI — Codex best practices: <https://learn.chatgpt.com/guides/best-practices>
+
+### 1.5 结论（六条硬原则）
 
 1. **两种作者分离**：人写的策略（AGENTS.md/rules）与 agent 写的记忆（auto memory）不能混。
 2. **文件优先**：持久知识必须是人类可读的 Markdown；向量/图谱是索引与检索，不是唯一副本。
@@ -251,6 +271,8 @@ for project in active_projects:
 | 新事实推翻旧事实 | 新条目 `supersedes` 旧条目；旧条目移 archive |
 | 代码/AGENTS.md 已能推出 | 丢弃 |
 | 只对一次会话有效 | 留在 episode，不升格 |
+| 同一偏好/纠正出现两次 | 晋升为 profile/topic（Claude Code 的 corrected-twice 规则） |
+| 与现有条目矛盾但无法判定 | 进 review，标 `conflict`；不静默覆盖 |
 | 涉及偏好/纠正 | 进 review（人确认后写 profile/topic） |
 | 涉及规则/流程变更 | 生成 **policy PR 建议**，绝不自动改 AGENTS.md |
 
@@ -379,14 +401,21 @@ recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
 
 ---
 
-## 11. 评估（长期方案必须可度量）
+## 11. 评估（按 Anthropic evals 方法论，不自己发明）
 
-- **黄金集**：每项目 50 个问题（决策、事故、偏好、引用），人工标注期望命中；
-- **离线指标**：hit@8、MRR、答案忠实度、token/会话、p95 延迟；
-- **影子对比**：与 opencode-mem 双写 2–4 周，按周对比同一批问题；
-- **回归**：每周 CI 跑黄金集，指标下降 >10% 阻断发布；
-- **漂移审计**：每月 review 记忆 diff + `prompt-audit`（对齐 Claude 的 `/doctor prompt-audit`）；
-- **成本**：统计 LLM token/会话，设定预算告警。
+- **任务来源**：从真实失败/纠正里取，**20–50 个/项目起步**（官方：不要等“几百个”）。
+- **结构**：task / trial / grader / transcript / outcome；每个 task 有明确成功标准与参考解。
+- **Grader 组合**：
+  - code-based：命中、引用、格式、延迟、token（快、可复现）；
+  - model-based：答案忠实度、是否有据可查（rubric，需人工校准）；
+  - human：抽样盲评，校准 LLM grader。
+- **capability vs regression**：能力集允许低通过率（爬坡）；回归集要求接近 100%。
+- **非确定性**：多次 trial，报 pass@k（至少一次对）与 pass^k（每次都对），不只看单次。
+- **平衡集**：既测“该召回”，也测“不该召回”（避免过度触发）。
+- **读 transcript**：每周抽失败样本读，区分“模型错”与“grader 错”；指标下降 >10% 阻断发布。
+- **影子对比**：按 §12.2 的 A/B/C 三段跑，不做长期双注入。
+- **漂移审计**：每月 review 记忆 diff + `prompt-audit`（对齐 Claude 的 `/doctor prompt-audit`）。
+- **成本**：统计 LLM token/会话，设预算告警。
 
 ---
 
@@ -459,9 +488,13 @@ recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
 
 ## 16. 参考（官方）
 
+- Anthropic — Context engineering: <https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents>
+- Anthropic — Claude Code best practices: <https://www.anthropic.com/engineering/claude-code-best-practices>
+- Anthropic — Demystifying evals for AI agents: <https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents>
 - Claude Code — How Claude remembers your project: <https://code.claude.com/docs/en/memory>
 - Claude API — Memory tool (`memory_20250818`): <https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool>
 - Codex — AGENTS.md 指南: <https://developers.openai.com/codex/guides/agents-md>
+- Codex — Best practices: <https://learn.chatgpt.com/guides/best-practices>
 - AGENTS.md 开放格式: <https://agents.md/>
 - Codex CLI — config / `project_doc_max_bytes`: <https://developers.openai.com/codex/config-reference>
 - Cognee — Remember / Recall / Improve / Forget: <https://docs.cognee.ai/core-concepts/main-operations/remember>
