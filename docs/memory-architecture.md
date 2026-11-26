@@ -362,7 +362,9 @@ recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
 
 ---
 
-## 12. 从 opencode-mem 迁移
+## 12. 从 opencode-mem 迁移与影子验证
+
+### 12.1 迁移
 
 1. 导出 SQLite：content/type/tags/project/session/created_at（现状 2252 条 / 876KB，2022 条 capture）。
 2. 分流：
@@ -370,9 +372,25 @@ recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
    - capture（2022 条）→ 合成 episode 批次（每 50 条/篇），标 `legacy`；
    - 原文存 `legacy-export.jsonl`（本地，可回溯）。
 3. 一次性 `remember(background=true, self_improvement=false)`，控制批次。
-4. **影子期**：mem 与 cognee 双写 2–4 周，只读 cognee 做对比。
-5. 切流：关 mem 插件、关 chart 的 cognee MCP 注入；镜像 -360MB；旧卷保留 30 天。
-6. 回滚：恢复 mem 插件 + 旧卷；cognee 侧数据保留。
+
+### 12.2 影子验证（只让一套生效，不是长期并跑）
+
+目标：用有限时间证明“新系统不劣于 mem”，而不是维护两套记忆。
+
+| 阶段 | 时长 | 写入 | 注入 | 看什么 |
+|---|---|---|---|---|
+| **A 离线回放** | 2–3 天 | 只导入 mem 历史 | 无（脚本对比） | 每项目 50 问：hit@8、MRR、答案忠实度、token |
+| **B 影子双写** | 1–2 周 | mem + cognee 都写 | **只有 mem 注入**；cognee 只在影子评估会话注入 | 捕获质量、召回质量、成本、失败率 |
+| **C 灰度切流** | 1 周 | cognee 为主，mem 停写 | **只有 cognee 注入**（先 team 一个实例） | 真实体验、延迟、误召回 |
+
+规则：
+
+- **任何阶段都不允许两套同时注入**：上下文冲突、token 翻倍、模型不知道信谁。
+- 影子评估会话用独立 dataset/标记，不污染生产记忆。
+- 双写期间多一次 cognify/会话，设预算告警；保留 kill switch。
+- 退出标准：C 阶段连续 1 周（或 50 个会话）不劣于 mem 基线；否则回滚。
+- 回滚：恢复 mem 插件 + 旧卷（保留 30 天）；cognee 侧数据保留不删。
+- 优先做 A：离线回放能提前暴露 80% 的召回质量问题，避免盲目双写 2–4 周。
 
 ---
 
@@ -384,7 +402,7 @@ recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
 | **P2 Distill & Review** | 夜间蒸馏、reconcile、review CLI、profile 更新 | 每条 topic 有 evidence；冲突 100% 进队列 |
 | **P3 Governance** | EBAC、备份/恢复、审计、删除/导出 | 越权测试通过；恢复演练通过 |
 | **P4 Scale & Eval** | 外部存储（PG+pgvector+Neo4j）、黄金集、CI 回归 | 多实例；指标达标 |
-| **P5 Cutover** | 影子、迁移、下线 mem | 连续 2 周指标不劣于 mem |
+| **P5 Cutover** | 离线回放 → 影子双写 → 灰度切流 → 下线 mem | C 阶段 1 周不劣于 mem |
 
 ---
 
