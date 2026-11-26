@@ -125,6 +125,39 @@ Claude Code 把记忆拆成**两种作者、两层机制**：
   对账会降级为“时间戳+过滤”，取代/冲突不可追溯——这时要么用文件层做权威副本，
   要么换一个满足契约的后端。**约束来自能力，不来自品牌。**
 
+### 2.6 Build vs Buy：优先用现成组件，不自己写引擎
+
+**结论先说：不自己写记忆引擎。** 2026 年已经有多个可直接用于 OpenCode 2 的组件，
+覆盖自动捕获、自动注入、混合检索、查看器；我们只保留“策略 + 治理 + 评估”这些无法外包的部分。
+
+候选（数据截至 2026-11-26，GitHub API / npm）：
+
+| 组件 | License | OpenCode 2 | 自动捕获/注入 | 存储 | 共享/多实例 | 状态 |
+|---|---|---|---|---|---|---|
+| **AgentMemory** (`rohitg00/agentmemory`) | Apache-2.0 | ✅ full plugin（22 hooks） | ✅（12 auto hooks） | 本地 server + file state，`--instance` 多实例 | 本地 server；同一 server 多 agent 共享 | 30.6k★，活跃，477 open issues |
+| **CodeMem** (`kunickiaj/codemem`) | MIT | ✅（beta，按 2.0.24 验证） | ✅（每 prompt 注入） | SQLite + sqlite-vec | 本地 + P2P sync | 83★，活跃，小而专 |
+| **opencode-supermemory** | MIT（插件） | ✅（V2 `server` 入口） | ✅ | Supermemory 云 / 自托管 server | 云或自托管 | 1.68k★，需账号/服务 |
+| **Cognee**（已部署 trial） | Apache-2.0 | ❌ 需薄适配（我们已有 254 行） | 需写 | 图 + 向量 + 关系 | 集中式，EBAC | 已跑通 MCP，trial 单副本 |
+| **Mnemon** (`mnemon-dev/mnemon`) | Apache-2.0 | ✅（native plugin） | ✅ | 图 + 单二进制 | 待验证 | 747★，活跃 |
+| **Basic Memory** | AGPL-3.0 | 仅 MCP（工具） | ❌ | Markdown 文件 | 文件同步 | 4.7k★，AGPL 有分发约束 |
+| **ByteRover / Cipher** | Elastic-2.0 | ✅ | MCP/skill | 云/本地 | 云 | 仓库已 archived，排除 |
+
+**建议的决策方式（bake-off，而不是拍脑袋）**：
+
+1. 入围：**AgentMemory、CodeMem、Cognee**（Supermemory 仅在允许云/自托管服务时入围）。
+2. 同一台机器、同一个 OpenCode 2.3.0、同一批 20–50 个评估任务（§11）。
+3. 打分：hit@8、注入 p95、捕获质量（人工抽检）、token/会话、安装体积、故障降级、许可。
+4. 决策规则：
+   - 任一开源组件达标 → **直接采用**，删掉自研插件，只写策略/治理/评估；
+   - 都不达标 → 保留 Cognee + 薄适配（现有 254 行插件改造），不重写引擎。
+5. 无论选谁，**这几件事仍要自己写**（没有组件能替）：
+   - `AGENTS.md` 分层与注入顺序；
+   - 组织级策略/权限（EBAC、NetworkPolicy、备份）；
+   - 评估黄金集与回归；
+   - 迁移与回滚。
+
+> 这也修正了早期设计的默认假设：自研 `opencode-cognee` 是**兜底方案**，不是第一选择。
+
 ---
 
 ## 3. 总体架构
@@ -455,7 +488,8 @@ recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
 
 | 阶段 | 交付 | 退出标准 |
 |---|---|---|
-| **P1 Foundation** | policy 链、Memory Vault、索引、episode 捕获、首条召回 | 捕获成功率 ≥99%；召回 p95 <300ms；重启不丢 |
+| **P0 选型** | AgentMemory / CodeMem / Cognee bake-off（同一批 20–50 任务） | 有数据支撑的选型结论；许可/维护/降级评估通过 |
+| **P1 Foundation** | 采用选型结果：组件接入 或 Cognee 薄适配；policy 链、索引、捕获、首条召回 | 捕获成功率 ≥99%；召回 p95 <300ms；重启不丢 |
 | **P2 Distill & Review** | 夜间蒸馏、reconcile、review CLI、profile 更新 | 每条 topic 有 evidence；冲突 100% 进队列 |
 | **P3 Governance** | EBAC、备份/恢复、审计、删除/导出 | 越权测试通过；恢复演练通过 |
 | **P4 Scale & Eval** | 外部存储（PG+pgvector+Neo4j）、黄金集、CI 回归 | 多实例；指标达标 |
