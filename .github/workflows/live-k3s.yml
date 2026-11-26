@@ -33,7 +33,7 @@ jobs:
       - uses: azure/setup-kubectl@v4
         with:
           version: "v1.37.2"
-      - name: 探针进 pod 并执行
+      - name: 跨会话验证（写/读分两次 exec）
         env:
           KUBECONFIG: ${{ steps.net.outputs.kubeconfig }}
         run: |
@@ -43,11 +43,21 @@ jobs:
           echo "POD=$POD"
           kubectl -n cognee-trial exec "$POD" -- python3 --version
           kubectl -n cognee-trial cp tests/live-probe.py "$POD:/tmp/live-probe.py"
+          STAMP="live-probe $GITHUB_RUN_ID $(date +%s)"
+          # 写：进程 A（独立 MCP 会话）
           kubectl -n cognee-trial exec "$POD" -- env \
             COGNEE_BASE_URL=http://127.0.0.1:8000 \
             PROBE_DATASET="live_${GITHUB_RUN_ID}" \
+            PROBE_MODE=remember \
+            PROBE_STAMP="$STAMP" \
+            python3 /tmp/live-probe.py
+          # 读：进程 B（全新 MCP 会话，跨会话召回）
+          kubectl -n cognee-trial exec "$POD" -- env \
+            COGNEE_BASE_URL=http://127.0.0.1:8000 \
+            PROBE_DATASET="live_${GITHUB_RUN_ID}" \
+            PROBE_MODE=recall \
+            PROBE_STAMP="$STAMP" \
             PROBE_TIMEOUT_S=1200 \
-            GITHUB_RUN_ID="$GITHUB_RUN_ID" \
             python3 /tmp/live-probe.py
           kubectl -n cognee-trial exec "$POD" -- rm -f /tmp/live-probe.py
           echo LIVE-K3S-OK

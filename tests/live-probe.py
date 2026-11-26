@@ -21,7 +21,10 @@ BASE = os.environ.get("COGNEE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 API_KEY = os.environ.get("COGNEE_API_KEY", "")
 DATASET = os.environ.get("PROBE_DATASET", "live_probe")
 TIMEOUT = int(os.environ.get("PROBE_TIMEOUT_S", "720"))
-STAMP = f"live-probe {os.environ.get('GITHUB_RUN_ID', 'manual')} {int(time.time())}"
+# MODE=remember: write only. MODE=recall: read only (needs PROBE_STAMP).
+# MODE unset/roundtrip: both (separate MCP sessions, same process).
+MODE = os.environ.get("PROBE_MODE", "roundtrip")
+STAMP = os.environ.get("PROBE_STAMP", f"live-probe {os.environ.get('GITHUB_RUN_ID', 'manual')} {int(time.time())}")
 
 
 def rpc(method, params, timeout=30, session=None):
@@ -73,11 +76,16 @@ def main():
                         {"name": name, "arguments": args}, timeout, session)
         return result
 
-    # remember (background: ingestion outlives any single request deadline)
-    r = call("remember", {"data": STAMP, "dataset_name": DATASET, "background": True}, 60)
-    print("remember accepted", flush=True)
+    if MODE in ("remember", "roundtrip"):
+        # remember (background: ingestion outlives any single request deadline)
+        r = call("remember", {"data": STAMP, "dataset_name": DATASET, "background": True}, 60)
+        print("remember accepted", flush=True)
+        if MODE == "remember":
+            print(f"STAMP={STAMP}", flush=True)
+            print("REMEMBER-OK", flush=True)
+            return 0
 
-    # poll recall (retrieval-only: no LLM needed server-side)
+    # recall (retrieval-only: no LLM needed server-side)
     deadline = time.time() + TIMEOUT
     attempt = 0
     while time.time() < deadline:
