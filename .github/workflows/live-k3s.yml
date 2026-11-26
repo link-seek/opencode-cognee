@@ -1,9 +1,10 @@
 name: live-k3s
 
-# 对已部署的 cognee-trial 后端做 recall/remember 实弹验证。
+# 对已部署的 cognee-trial 后端做 remember/recall 实弹验证。
 # 路径：runner 进 tailnet（组织 TS_API_KEY）→ runner-net 组 kubeconfig
 # （本仓 secrets CI_KUBE_CA/CI_KUBE_TOKEN，从 infra 仓同名值复制）→
-# kubectl port-forward svc/cognee -n cognee-trial → node live test。
+# kubectl cp 探针进 cognee pod → kubectl exec 运行（零新对象、零 RBAC 变更、
+# 不碰生产 opencode；port-forward 因 ci-deployer 无 pods/portforward 权限而不可用）。
 # 手动 dispatch；不碰生产数据（独立 dataset，跑完 forget）。
 
 on:
@@ -22,11 +23,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: npm install -g npm@latest
-      - run: npm ci
       - name: 进网＋组 kubeconfig
         id: net
         uses: ./.github/actions/runner-net
@@ -37,23 +33,21 @@ jobs:
       - uses: azure/setup-kubectl@v4
         with:
           version: "v1.37.2"
-      - name: port-forward cognee-trial
+      - name: 探针进 pod 并执行
+        env:
+          KUBECONFIG: ${{ steps.net.outputs.kubeconfig }}
         run: |
           set -euo pipefail
-          export KUBECONFIG="${{ steps.net.outputs.kubeconfig }}"
-          kubectl -n cognee-trial wait --for=condition=available deploy/cognee --timeout=180s
-          kubectl -n cognee-trial port-forward svc/cognee 18000:8000 > /tmp/pf.log 2>&1 &
-          echo $! > /tmp/pf.pid
-          for i in $(seq 1 30); do
-            curl -s -m 5 http://127.0.0.1:18000/health && break
-            sleep 5
-            [ "$i" = 30 ] && { echo "FAIL: port-forward 未就绪"; cat /tmp/pf.log; exit 1; }
-          done
-          echo PF-OK
-      - name: live round-trip
-        env:
-          COGNEE_BASE_URL: http://127.0.0.1:18000
-        run: npm run test:live
-      - name: 收尾 port-forward
-        if: always()
-        run: kill "$(cat /tmp/pf.pid)" 2>/dev/null || true
+          POD="$(kubectl -n cognee-trial get pods -l app=cognee -o jsonpath='{.items[0].metadata.name}')"
+          [ -n "$POD" ] || { echo "FAIL: cognee-trial 下无 app=cognee 的 pod"; exit 1; }
+          echo "POD=$POD"
+          kubectl -n cognee-trial exec "$POD" -- python3 --version
+          kubectl -n cognee-trial cp tests/live-probe.py "$POD:/tmp/live-probe.py"
+          kubectl -n cognee-trial exec "$POD" -- env \
+            COGNEE_BASE_URL=http://127.0.0.1:8000 \
+            PROBE_DATASET="live_${GITHUB_RUN_ID}" \
+            PROBE_TIMEOUT_S=1200 \
+            GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            python3 /tmp/live-probe.py
+          kubectl -n cognee-trial exec "$POD" -- rm -f /tmp/live-probe.py
+          echo LIVE-K3S-OK
