@@ -448,9 +448,11 @@ OpenCode OSS 的 server auth 是**单账号**（`OPENCODE_SERVER_USERNAME/PASSWO
 
 > 如果 team 实例是多人共用同一个登录，必须先做方案 B，或在 team 内改成一人一 pod。
 
-### 7.5 子 agent 与密钥
+### 7.5 子 agent、用户生命周期与密钥
 
 - 子 agent 默认不继承主记忆；父会话显式传 scope/token。
+- **用户生命周期**：创建/禁用/删除；token 轮换与吊销；删除用户时删除其 private dataset，
+  team/org 中由该用户贡献的条目按“撤销/保留”策略处理（默认撤销，保留审计）。
 - 密钥永不入记忆；scrub + 拒写 + 扫描。
 - 审计：每次晋升/撤销记录 `actor / source_hash / reviewer / ts`。
 
