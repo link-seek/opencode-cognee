@@ -125,3 +125,33 @@ parameters in tools.
   scrubbed trace if the model call fails.
 - Cognee must be the only writer to its data directory. Run the REST API as the sole
   writer and put the MCP server in API-proxy mode (`--api-url`) if both are needed.
+
+
+## Kubernetes / image integration (link-seek)
+
+The `opencode-tools` image bakes the plugin as a project-location file plugin:
+
+```
+/.opencode/plugins/cognee/index.ts
+```
+
+OpenCode scans the project `.opencode/plugins/` directory automatically; no `plugins`
+package spec is written to `opencode.json`. This avoids the npm registry and OpenCode's
+own npm cache (`~/.cache/opencode/npm`), which is required for package plugins.
+
+Environment (from the pod Secret):
+
+```
+COGNEE_BASE_URL=http://cognee.cognee-trial.svc.cluster.local:8001
+COGNEE_USERS={"xieyucheng":{...},"yingxin":{...}}
+COGNEE_ALLOW_DEFAULT_IDENTITY=0
+COGNEE_IDLE_DEBOUNCE_MS=60000
+```
+
+Recall is injected as a **transient system message in `event.messages`**, not appended
+to `event.system`; the provider used in this deployment only retains the first system
+instruction part, while message-level system content is visible to the model. The same
+query reuses the cached block across tool continuations (one recall API call per turn).
+
+Cognee side: `cognee-api` (REST, sole DB writer, port 8001) + `cognee-mcp` (API proxy,
+port 8000, existing `/mcp` contract), one `cognee-data` PVC, EBAC/JWT/hashed API keys.
