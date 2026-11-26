@@ -1,0 +1,37 @@
+{
+  "name": "@link-seek/opencode-cognee",
+  "version": "0.1.0",
+  "description": "OpenCode v2 native plugin for Cognee persistent memory (auto-recall + auto-capture)",
+  "type": "module",
+  "main": ".opencode/plugins/cognee/index.ts",
+  "files": [
+    ".opencode/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "cognee",
+    "memory"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/link-seek/opencode-cognee.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
