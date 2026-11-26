@@ -132,31 +132,38 @@ Claude Code 把记忆拆成**两种作者、两层机制**：
 
 候选（数据截至 2026-11-26，GitHub API / npm）：
 
-| 组件 | License | OpenCode 2 | 自动捕获/注入 | 存储 | 共享/多实例 | 状态 |
+| 组件 | License | OpenCode 2 | 自动捕获/注入 | **多用户/隔离** | 存储/共享 | 状态 |
 |---|---|---|---|---|---|---|
-| **AgentMemory** (`rohitg00/agentmemory`) | Apache-2.0 | ✅ full plugin（22 hooks） | ✅（12 auto hooks） | 本地 server + file state，`--instance` 多实例 | 本地 server；同一 server 多 agent 共享 | 30.6k★，活跃，477 open issues |
-| **CodeMem** (`kunickiaj/codemem`) | MIT | ✅（beta，按 2.0.24 验证） | ✅（每 prompt 注入） | SQLite + sqlite-vec | 本地 + P2P sync | 83★，活跃，小而专 |
-| **opencode-supermemory** | MIT（插件） | ✅（V2 `server` 入口） | ✅ | Supermemory 云 / 自托管 server | 云或自托管 | 1.68k★，需账号/服务 |
-| **Cognee**（已部署 trial） | Apache-2.0 | ❌ 需薄适配（我们已有 254 行） | 需写 | 图 + 向量 + 关系 | 集中式，EBAC | 已跑通 MCP，trial 单副本 |
-| **Mnemon** (`mnemon-dev/mnemon`) | Apache-2.0 | ✅（native plugin） | ✅ | 图 + 单二进制 | 待验证 | 747★，活跃 |
-| **Basic Memory** | AGPL-3.0 | 仅 MCP（工具） | ❌ | Markdown 文件 | 文件同步 | 4.7k★，AGPL 有分发约束 |
-| **ByteRover / Cipher** | Elastic-2.0 | ✅ | MCP/skill | 云/本地 | 云 | 仓库已 archived，排除 |
+| **AgentMemory** (`rohitg00/agentmemory`) | Apache-2.0 | ✅ full plugin（22 hooks） | ✅（12 auto hooks） | `USER_ID`/`TEAM_ID`/`AGENT_ID` **标签隔离** + team share；**无角色/ACL** | 本地 server + file state；`--instance` | 30.6k★，活跃，477 issues |
+| **CodeMem** (`kunickiaj/codemem`) | MIT | ✅（beta，按 2.0.24 验证） | ✅（每 prompt 注入） | 项目/团队共享 + P2P；**无 per-user ACL** | SQLite + sqlite-vec | 83★，活跃 |
+| **opencode-supermemory** | MIT（插件） | ✅（V2 `server`） | ✅ | **namespace 硬隔离 + scoped key**；多成员/角色仅 Enterprise/云，自托管 local 单租户 | Supermemory 云/自托管 | 1.68k★ |
+| **Cognee**（已部署 trial） | Apache-2.0 | ❌ 需薄适配 | 需写 | **EBAC 默认开：users/roles/tenants + dataset 级 read/write/delete/share；每 user/dataset 独立存储** | 图+向量+关系，集中式 | 已跑通 MCP |
+| **Mnemon** | Apache-2.0 | ✅ native plugin | ✅ | 待验证 | 图/单二进制 | 747★ |
+| **Basic Memory** | AGPL-3.0 | 仅 MCP | ❌ | 单用户文件 | Markdown | 4.7k★ |
+| **ByteRover / Cipher** | Elastic-2.0 | ✅ | MCP/skill | 云/本地 | 云 | archived，排除 |
 
-**建议的决策方式（bake-off，而不是拍脑袋）**：
+**多用户 + 私有→公共晋升，直接改变排序：**
 
-1. 入围：**AgentMemory、CodeMem、Cognee**（Supermemory 仅在允许云/自托管服务时入围）。
-2. 同一台机器、同一个 OpenCode 2.3.0、同一批 20–50 个评估任务（§11）。
-3. 打分：hit@8、注入 p95、捕获质量（人工抽检）、token/会话、安装体积、故障降级、许可。
-4. 决策规则：
-   - 任一开源组件达标 → **直接采用**，删掉自研插件，只写策略/治理/评估；
-   - 都不达标 → 保留 Cognee + 薄适配（现有 254 行插件改造），不重写引擎。
-5. 无论选谁，**这几件事仍要自己写**（没有组件能替）：
-   - `AGENTS.md` 分层与注入顺序；
-   - 组织级策略/权限（EBAC、NetworkPolicy、备份）；
-   - 评估黄金集与回归；
-   - 迁移与回滚。
+- **Cognee 领先**：它是自托管开源里唯一做到 **dataset 级 ACL（read/write/delete/share）+ 每用户/每 dataset 独立存储** 的；
+  官方文档明确 `ENABLE_BACKEND_ACCESS_CONTROL=true` 时数据按 `<user_uuid>/<dataset_uuid>` 落盘，
+  且 dataset 参数在关闭 EBAC 时会被忽略（= 不能靠“约定”隔离）。
+- **AgentMemory / CodeMem 只适合“一人一实例、无跨用户 ACL”**：它们的 user/team 是标签与共享工具，
+  没有角色、没有权限校验，不能作为“多用户硬隔离”的底座。
+- **Supermemory** 的 namespace 是硬隔离，但多成员/角色/治理在 **Enterprise/云**；自托管 local 是单租户。
+- 因此：**如果“多用户 + 私有/公共分层”是硬需求，Cognee 是默认选型**；
+  AgentMemory/CodeMem 退居“单用户/单团队”候选，Supermemory 仅在允许云/企业版时考虑。
 
-> 这也修正了早期设计的默认假设：自研 `opencode-cognee` 是**兜底方案**，不是第一选择。
+**bake-off 评分权重（按本需求调整）**：隔离/权限 40%、召回 25%、捕获 15%、成本/体积 10%、维护 10%。
+入围：**Cognee**、Supermemory（若允许云/企业版）、AgentMemory（仅验证标签隔离是否够用）。
+
+**无论选谁，这几件事仍要自己写**：
+
+- `AGENTS.md` 分层与注入顺序；
+- **私有 → 抽象 → 公共的晋升流水线**（见 §7.3）；
+- 评估黄金集与回归；
+- 迁移与回滚。
+
+> 这也修正了早期设计的默认假设：自研 `opencode-cognee` 是**兜底方案**；但“多用户 ACL”这一条让 Cognee 从兜底变成首选引擎。
 
 ---
 
@@ -183,8 +190,8 @@ Claude Code 把记忆拆成**两种作者、两层机制**：
                 │ episode（append-only，带溯源）                 │ 检索（默认 CHUNKS）
 ┌───────────────▼──────────────────────────┐   ┌───────────────▼───────────────┐
 │ cognee（单写者 + PVC）                    │   │ Review CLI / PR               │
-│  dataset: opencode_<instance>            │   │  memory diff / conflict /      │
-│  node_set: project/type/date/scope       │   │  policy 变更建议（人合）        │
+│  u_<user> (private) / t_<team> / org_common│   │  memory diff / conflict /      │
+│  node_set: project/type/date/scope       │   │  promotion review / policy PR  │
 │  graph + vector + temporal + conflict    │   └───────────────────────────────┘
 └──────────────────────────────────────────┘
 ```
@@ -233,7 +240,7 @@ packages/*/AGENTS.md           # 子项目就近覆盖（Codex 风格）
 ---
 id: mem_01J...
 type: semantic | reference | profile
-scope: org | user | project
+scope: private | team | org
 project: <repo-hash>          # scope=org 时为空
 created: 2026-11-26T10:00:00Z
 modified: 2026-11-26T10:00:00Z
@@ -255,8 +262,8 @@ sensitivity: normal | private # secret 永不入库
 
 | 项 | 值 |
 |---|---|
-| dataset | `opencode_<instance>`（每实例一个；不建多库） |
-| node_set | `project:<hash>` / `type:<episode\|semantic\|reference>` / `date:<YYYY-MM-DD>` / `scope:<project\|org>` |
+| dataset | 三层：`u_<user_id>`（private）/ `t_<team_id>`（team）/ `org_common`（org）；Cognee 每 dataset 独立存储 |
+| node_set | `project:<hash>` / `type:<episode\|semantic\|reference>` / `date:<YYYY-MM-DD>` / `scope:<private\|team\|org>` |
 | 重要度 | 决策/教训用 `importance_weight` 提升；临时排障降低 |
 | 时间 | 用 cognee 的 temporal / 版本能力表达“当时为真、后来被取代” |
 | 冲突 | 开 conflict review；未决冲突进 Review 队列，不静默覆盖 |
@@ -274,9 +281,10 @@ on idle(sessionID):
   ep = generate.text(session model, EPISODE_PROMPT, last 60 msgs / 32KB)
   ep = scrub(ep)                      # 凭据/PEM/token
   if near_dup(ep, recent): return
-  wal.put(ep); remember(ep, dataset, node_set, background=true, self_improvement=false)
+  wal.put(ep); remember(ep, dataset=u_<user>, node_set, background=true, self_improvement=false)
 ```
 
+- **默认写入用户私有 dataset `u_<user>`**；team/org 只在显式分享/晋升时写（§7.3）。
 - 只捕获**会话级** episode；不逐工具灌（噪声 + token）。
 - `self_improvement=false`：避免每条都跑 improve；改善收敛到夜间。
 - 写入前 redaction；`sensitivity` 标记；secret 形态直接拒写。
@@ -348,7 +356,7 @@ for project in active_projects:
 
 ### 6.2 检索触发（不是每轮都查）
 
-- 会话首条：总是检索（项目 + org scope）；
+- 会话首条：总是检索（private + team + org scope）；
 - 后续轮：仅当 query 命中“过去/上次/之前/为什么/决定”等意图，或用户显式调用；
 - 子 agent：不继承主记忆（对齐 Claude），需要时显式传 scope；
 - `context` hook 每请求会多次触发 → **按 messageID 去重，每轮最多一次**。
@@ -357,7 +365,7 @@ for project in active_projects:
 
 ```
 recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
-  → 过滤 scope（project / org）
+  → 过滤 scope（private / team / org；按权限）
   → 排序：recency × importance × strength(hits)
   → 去重、截断到 8 条 / 4K token
   → 包裹为 <memory source=... trust=untrusted> 注入
@@ -375,17 +383,76 @@ recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
 
 ---
 
-## 7. 作用域、优先级、隔离
+## 7. 多用户、隔离与“私有 → 公共”晋升
 
-| 维度 | 规则 |
-|---|---|
-| 策略优先级 | managed > user > project > local（就近覆盖）；同层冲突 = CI 错误 |
-| 记忆 scope | 默认 `project`；`org` 需显式写入/晋升；跨项目查询需显式 |
-| 实例隔离 | 每实例一个 cognee user + token，dataset 固定 `opencode_<instance>` |
-| 项目隔离 | 正文/节点带 `project`，召回后过滤（单用户模式下 dataset 过滤不可靠） |
-| 子 agent | 默认不继承；需要时由父会话显式注入 |
-| 数据边界 | 单实例单库；EBAC 开启；NetworkPolicy 只放行 opencode ns |
-| 密钥 | 永不入记忆；scrub + 拒写 + 扫描 |
+### 7.1 三层作用域
+
+| Scope | dataset | 所有者 | 读 | 写 | 用途 |
+|---|---|---|---|---|---|
+| **private** | `u_<user_id>` | 用户本人 | 本人 | 本人 | 个人偏好、项目细节、未验证结论 |
+| **team** | `t_<team_id>` | team 服务账号 | team 成员 | team 成员/审核者 | 团队内共享的项目知识 |
+| **org** | `org_common` | org 服务账号 | 所有已认证用户 | 仅 `knowledge_reviewer` | 抽象后的公共知识 |
+
+- 默认写入 **private**；任何跨用户可见都必须**显式晋升**，不存在“自动共享”。
+- 读取优先级：private > team > org。个人事实以 private 为准；策略/规范类以 org 为准（policy 另走 AGENTS.md）。
+- 项目维度是 dataset 内的 `project` 标签；用户/团队维度是 dataset 边界（Cognee 的物理隔离）。
+
+### 7.2 权限矩阵（Cognee EBAC）
+
+| 角色 | private | team | org_common |
+|---|---|---|---|
+| user | read/write/delete | read（成员） | read |
+| team_lead | — | read/write/share | read |
+| knowledge_reviewer | — | read | read/write/share |
+| admin | — | — | read/write/delete/share |
+
+- 开 `ENABLE_BACKEND_ACCESS_CONTROL=true` + `REQUIRE_AUTHENTICATION=true`。
+- 数据按 `<user_uuid>/<dataset_uuid>` 落盘（官方文档），**不是查询期过滤**。
+- 共享 dataset 用 `share` 权限授予；**禁止用同名 dataset 约定隔离**。
+
+### 7.3 私有 → 公共的晋升流水线
+
+```
+private episode/topic
+   │ ① 候选：蒸馏出可复用结论（去人名/路径/一次性细节）
+   ▼
+candidate (private, status=pending)
+   │ ② 抽象：泛化措辞、去标识、只保留证据哈希（不复制原文）
+   │ ③ 门槛：≥2 个独立来源 或 同一结论重复 ≥3 次；置信度 ≥0.8
+   ▼
+review queue
+   │ ④ 审核：owner + knowledge_reviewer；看 diff 与证据
+   ▼
+org_common (status=published, derived_from_hash, reviewed_by, published_at)
+   │ ⑤ 可撤销：tombstone + 从 org 移除；private 源不受影响
+```
+
+硬规则：
+
+- 晋升**只写抽象后的文本**，不复制 private 原文；`derived_from` 只存哈希，避免反查。
+- 晋升**必须人工审核**；模型只能生成候选，不能直接写 `org_common`。
+- 撤销/删除要传播：org 条目 tombstone，召回不再返回；审计记录保留。
+- 冲突：org 与 private 冲突时，个人回答以 private 为准；org 条目标 `conflicted` 进复核。
+
+### 7.4 身份来源（必须先解决）
+
+OpenCode OSS 的 server auth 是**单账号**（`OPENCODE_SERVER_USERNAME/PASSWORD`），没有内建多用户。
+“多用户隔离”必须在部署层建立身份，二选一：
+
+| 方案 | 做法 | 隔离强度 | 成本 |
+|---|---|---|---|
+| **A. 一人一实例** | 每用户一个 OpenCode pod/namespace，注入该用户的 Cognee token | 强（入口即隔离） | 高（每用户一套 pod） |
+| **B. 共享实例 + SSO 网关** | oauth2-proxy/Authentik 在前，按 SSO 身份注入用户头/短期 token；插件按 token 调 Cognee | 强（前提：头不可伪造，插件不信任客户端传的 user_id） | 中（网关 + token 映射） |
+
+**不接受**：共享实例里靠 `USER_ID` 环境变量或模型传参区分用户——那是“约定隔离”，不是权限隔离。
+
+> 如果 team 实例是多人共用同一个登录，必须先做方案 B，或在 team 内改成一人一 pod。
+
+### 7.5 子 agent 与密钥
+
+- 子 agent 默认不继承主记忆；父会话显式传 scope/token。
+- 密钥永不入记忆；scrub + 拒写 + 扫描。
+- 审计：每次晋升/撤销记录 `actor / source_hash / reviewer / ts`。
 
 ---
 
@@ -426,7 +493,7 @@ recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
 ## 10. 安全与合规
 
 - 写入前脱敏：PEM、`api_key/token/secret/password`、云 AK/SK、`.env` 形态；
-- `sensitivity: private` 的条目只在 project scope 检索，不晋升 org；
+- `sensitivity: private` 的条目只在 private/team 检索，不晋升 org；
 - 静态加密（卷）+ 传输 TLS（集群内可 mTLS）；
 - 最小权限：每实例 token、EBAC、NetworkPolicy；
 - 删除权：`forget` + 备份清除 + 导出可验证；
@@ -457,11 +524,15 @@ recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
 ### 12.1 迁移
 
 1. 导出 SQLite：content/type/tags/project/session/created_at（现状 2252 条 / 876KB，2022 条 capture）。
-2. 分流：
-   - curated（~230 条）→ 蒸馏成 topic 文件（semantic/reference），进 `MEMORY.md`；
-   - capture（2022 条）→ 合成 episode 批次（每 50 条/篇），标 `legacy`；
+2. 按**原 owner** 归位：既然旧库是单实例本地库，先按实例/用户映射到 `u_<user_id>`；
+   不把任何个人数据直接写进 `org_common`。
+3. 分流：
+   - curated（~230 条）→ 蒸馏成 topic 文件（semantic/reference），进该用户 `MEMORY.md`；
+     其中确实通用的，走 §7.3 晋升流程（抽象 + 审核）后才进 `org_common`；
+   - capture（2022 条）→ 合成 episode 批次（每 50 条/篇），标 `legacy`，写回该用户私有库；
    - 原文存 `legacy-export.jsonl`（本地，可回溯）。
-3. 一次性 `remember(background=true, self_improvement=false)`，控制批次。
+4. 一次性 `remember(background=true, self_improvement=false)`，控制批次。
+5. 校验：以用户 A 的 token 读不到用户 B 的 dataset（越权测试必须失败）。
 
 ### 12.2 影子验证（只让一套生效，不是长期并跑）
 
@@ -505,18 +576,21 @@ recall(query, dataset, search_type="CHUNKS", top_k=20, include_references=true)
 4. **可迁移**：Markdown + COGX 导出，能换后端。
 5. **性能**：召回 p95 <300ms（CHUNKS）；捕获不影响会话延迟。
 6. **可靠**：后端挂 0 报错；WAL 不丢；RPO 24h / RTO 1h。
-7. **隔离**：实例间、项目间、子 agent 间不串。
+7. **隔离**：用户间、项目间、子 agent 间不串；越权读写必须被 Cognee 拒绝（不是靠过滤）。
 8. **成本**：≤2 次 LLM/会话（摘要 + distill 摊销）；召回 0 LLM。
+9. **晋升**：private → org 只能经抽象 + 人工审核；每次晋升可追溯到 reviewer 与证据哈希；可撤销。
+10. **身份**：共享实例必须走 SSO 网关或一人一 pod；不接受 `USER_ID` 约定隔离。
 
 ---
 
 ## 15. 待决问题（需要团队拍板）
 
-1. auto memory 是否进 git？建议：**不进**（噪声大），走卷 + 每日导出；policy 变更走 PR。
-2. 蒸馏模型：会话模型 vs 更便宜的小模型？（建议 distill 用小模型，摘要用会话模型）
-3. 保留期默认值：episode 90 天 / semantic 180 天 / profile 30 天衰减，是否合适？
-4. `org` 级记忆的晋升门槛：谁有权晋升？建议：人工 review + 双人同意。
-5. 是否需要 Discussions 作为 RFC 讨论区（当前仓库未开启）。
+1. **身份方案（阻塞项）**：一人一 pod（A）还是共享实例 + SSO 网关（B）？team 实例是否多人共用登录？
+2. 晋升审批：`knowledge_reviewer` 由谁担任？是否需要 owner + reviewer 双人同意？
+3. auto memory 是否进 git？建议：**不进**（噪声大），走卷 + 每日导出；policy 变更走 PR。
+4. 蒸馏模型：会话模型 vs 更便宜的小模型？（建议 distill 用小模型，摘要用会话模型）
+5. 保留期默认值：episode 90 天 / semantic 180 天 / profile 30 天衰减，是否合适？
+6. 是否开启 Discussions 作为 RFC 讨论区（当前仓库未开启）。
 
 ---
 
