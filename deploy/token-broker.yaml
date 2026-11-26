@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cognee-token-broker
+  namespace: cognee-trial
+  labels:
+    app: cognee-token-broker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cognee-token-broker
+  template:
+    metadata:
+      labels:
+        app: cognee-token-broker
+    spec:
+      imagePullSecrets:
+        - name: swr-pull
+      containers:
+        - name: broker
+          image: swr.cn-north-9.myhuaweicloud.com/link-seek/opencode-tools@sha256:a56f9ab62e0801133389c487adf56fce0ea1f72b0ca77cfb4db450351e8db2a7
+          command: ["node", "/app/token-broker.mjs"]
+          env:
+            - {name: BROKER_PORT, value: "8787"}
+            - {name: COGNEE_BASE_URL, value: "http://cognee.cognee-trial.svc.cluster.local:8001"}
+            - name: BROKER_TOKEN
+              valueFrom: {secretKeyRef: {name: cognee-broker-env, key: BROKER_TOKEN}}
+            - name: COGNEE_USERS
+              valueFrom: {secretKeyRef: {name: cognee-broker-env, key: COGNEE_USERS}}
+          ports:
+            - {name: http, containerPort: 8787}
+          readinessProbe:
+            httpGet: {path: /health, port: 8787}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8787}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - {name: broker-src, mountPath: /app/token-broker.mjs, subPath: token-broker.mjs, readOnly: true}
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+      volumes:
+        - name: broker-src
+          configMap:
+            name: cognee-token-broker
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cognee-token-broker
+  namespace: cognee-trial
+  labels:
+    app: cognee-token-broker
+spec:
+  selector:
+    app: cognee-token-broker
+  ports:
+    - {name: http, port: 8787, targetPort: 8787}

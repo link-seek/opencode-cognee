@@ -143,7 +143,8 @@ Environment (from the pod Secret):
 
 ```
 COGNEE_BASE_URL=http://cognee.cognee-trial.svc.cluster.local:8001
-COGNEE_USERS={"xieyucheng":{...},"yingxin":{...}}
+COGNEE_BROKER_URL=http://cognee-token-broker.cognee-trial.svc.cluster.local:8787
+COGNEE_BROKER_TOKEN=<pod-scoped broker token>
 COGNEE_ALLOW_DEFAULT_IDENTITY=0
 COGNEE_IDLE_DEBOUNCE_MS=60000
 ```
