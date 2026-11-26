@@ -1,0 +1,59 @@
+name: live-k3s
+
+# 对已部署的 cognee-trial 后端做 recall/remember 实弹验证。
+# 路径：runner 进 tailnet（组织 TS_API_KEY）→ runner-net 组 kubeconfig
+# （本仓 secrets CI_KUBE_CA/CI_KUBE_TOKEN，从 infra 仓同名值复制）→
+# kubectl port-forward svc/cognee -n cognee-trial → node live test。
+# 手动 dispatch；不碰生产数据（独立 dataset，跑完 forget）。
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-k3s
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - name: 进网＋组 kubeconfig
+        id: net
+        uses: ./.github/actions/runner-net
+        with:
+          ts_api_key: ${{ secrets.TS_API_KEY }}
+          kube_ca_data: ${{ secrets.CI_KUBE_CA }}
+          kube_token: ${{ secrets.CI_KUBE_TOKEN }}
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.37.2"
+      - name: port-forward cognee-trial
+        run: |
+          set -euo pipefail
+          export KUBECONFIG="${{ steps.net.outputs.kubeconfig }}"
+          kubectl -n cognee-trial wait --for=condition=available deploy/cognee --timeout=180s
+          kubectl -n cognee-trial port-forward svc/cognee 18000:8000 > /tmp/pf.log 2>&1 &
+          echo $! > /tmp/pf.pid
+          for i in $(seq 1 30); do
+            curl -s -m 5 http://127.0.0.1:18000/health && break
+            sleep 5
+            [ "$i" = 30 ] && { echo "FAIL: port-forward 未就绪"; cat /tmp/pf.log; exit 1; }
+          done
+          echo PF-OK
+      - name: live round-trip
+        env:
+          COGNEE_BASE_URL: http://127.0.0.1:18000
+        run: npm run test:live
+      - name: 收尾 port-forward
+        if: always()
+        run: kill "$(cat /tmp/pf.pid)" 2>/dev/null || true

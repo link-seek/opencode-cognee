@@ -11,7 +11,8 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/plugin.test.mjs",
+    "test:live": "node --test tests/live-k3s.test.mjs"
   },
   "dependencies": {
     "@opencode/plugin": "2.3.0"

@@ -1,0 +1,31 @@
+name: ts-bringup（tailscale 进网唯一入口）
+# 复制自 link-seek/infra .github/actions/ts-bringup（2026-11-26）；只用 up 模式。
+# 调用方负责 mint（tags/expiry 各链不同）。authKey 永不落日志，只活本 step 内存；临时机随 runner 焚毁。
+description: "tailscale 进网：up 模式"
+
+inputs:
+  auth_key:
+    description: "已 mint 的 authkey（现签现用）"
+    required: true
+  hostname:
+    description: "本机 tailnet hostname"
+    required: true
+  mode:
+    description: "up=传统一行（仅支持 up）"
+    required: false
+    default: "up"
+
+runs:
+  using: composite
+  steps:
+    - name: 进网
+      shell: bash
+      env:
+        TS_AUTH_KEY: ${{ inputs.auth_key }}
+      run: |
+        set -euo pipefail
+        echo "::add-mask::$TS_AUTH_KEY"
+        HN="${{ inputs.hostname }}"
+        timeout 120 sudo tailscale up --authkey="$TS_AUTH_KEY" --hostname="$HN" --accept-routes=false --accept-dns=false
+        sudo tailscale ip -4
+        echo NETMAP-OK
