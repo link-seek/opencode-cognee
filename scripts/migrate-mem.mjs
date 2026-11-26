@@ -43,10 +43,13 @@ const dir = required("dir")
 const identity = required("identity")
 const baseUrl = required("base-url").replace(/\/+$/, "")
 const email = required("email")
-const password = required("password")
+const passwordEnv = arg("password-env")
+const password = arg("password") || (passwordEnv ? process.env[passwordEnv] : undefined) || required("password")
 const batchSize = Number(arg("batch", "40"))
 const limit = Number(arg("limit", "0"))
 const delayMs = Number(arg("delay-ms", "500"))
+const maxPending = Number(arg("max-pending", "3"))
+const queueTimeoutMs = Number(arg("queue-timeout", "900")) * 1000
 const dryRun = flag("dry-run")
 const statePath = arg("state", `./migration-${identity}.json`)
 const jsonlPath = arg("jsonl", "")
@@ -206,6 +209,22 @@ async function ensureDataset(token) {
   return created.id
 }
 
+async function waitForQueue(token, datasetId) {
+  const deadline = Date.now() + queueTimeoutMs
+  for (;;) {
+    const res = await api(`/api/v1/datasets/${datasetId}/processing-status`, token)
+    const status = await res.json()
+    const pending = Number(status.pending ?? 0)
+    if (pending <= maxPending) return
+    if (Date.now() > deadline) {
+      console.warn(`queue still has ${pending} pending items after ${queueTimeoutMs / 1000}s; continuing`)
+      return
+    }
+    console.log(`queue pending=${pending}; waiting...`)
+    await new Promise((r) => setTimeout(r, 5_000))
+  }
+}
+
 async function remember(token, datasetId, text, nodeSets) {
   const form = new FormData()
   form.append("raw_data", text)
@@ -283,6 +302,7 @@ async function main() {
   for (const [index, doc] of docs.entries()) {
     const nodeSets = doc.kind === "profile" ? ["legacy", "profile"] : ["legacy", "episode"]
     try {
+      await waitForQueue(token, datasetId)
       await remember(token, datasetId, doc.text, nodeSets)
       if (doc.kind === "memories") for (const id of doc.ids) imported.add(id)
       if (doc.kind === "profile") imported.add(doc.id)
