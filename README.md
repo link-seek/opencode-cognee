@@ -148,12 +148,12 @@ COGNEE_ALLOW_DEFAULT_IDENTITY=0
 COGNEE_IDLE_DEBOUNCE_MS=60000
 ```
 
-Recall is injected as a **transient system message in `event.messages`**, not appended
-to `event.system`; the provider used in this deployment only retains the first system
-instruction part, while message-level system content is visible to the model. The same
-query reuses the cached block across tool continuations (one recall API call per turn).
-Each recalled hit is clipped to 240 characters; longer chunks otherwise append legacy
-batch text that makes the model treat the memory as ambiguous.
+Recall is injected as a **transient user message in `event.messages`**, not appended
+to `event.system`; this deployment's provider/model ignores appended system parts and
+was inconsistent with message-level system messages, while user-message content is used.
+The same query reuses the cached block across tool continuations (one recall API call
+per turn). Each hit is reduced to its first fact sentence (text before the first `##`)
+and clipped to 240 characters; otherwise legacy batch text makes the memory ambiguous.
 
 Cognee side: `cognee-api` (REST, sole DB writer, port 8001) + `cognee-mcp` (API proxy,
 port 8000, existing `/mcp` contract), one `cognee-data` PVC, EBAC/JWT/hashed API keys.
