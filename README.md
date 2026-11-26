@@ -11,7 +11,7 @@ following the [official migration table](https://opencode.ai/docs/build/plugins/
 ## Install
 
 ```sh
-opencode plugin add @link-seek/opencode-cognee
+opencode plugin add @linkseek/opencode-cognee
 ```
 
 Needs a reachable Cognee backend (self-hosted `cognee-mcp` or equivalent):
@@ -26,6 +26,15 @@ In-cluster example: `http://cognee.cognee-trial.svc.cluster.local:8000`.
 
 ## Behavior
 
-- recall injected via `session.prompt` hook; capture via `tool.execute.after`
+- auto-recall + auto-capture (v0.1; implementation is being reworked per the design below)
 - backend down = memory degrades to no-op (warns, never breaks the session)
 - credential-shaped content is scrubbed before upload, payloads truncated
+
+## Design
+
+Long-term memory architecture (Claude Code / Codex-aligned):
+
+- [docs/memory-architecture.md](docs/memory-architecture.md)
+
+Two authorships (human policy vs agent memory), file-first vault + cognee retrieval,
+full lifecycle (capture → distill → review → supersede → delete/export).
