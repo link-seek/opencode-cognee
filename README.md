@@ -148,9 +148,9 @@ COGNEE_ALLOW_DEFAULT_IDENTITY=0
 COGNEE_IDLE_DEBOUNCE_MS=60000
 ```
 
-Recall is injected as a **transient user message in `event.messages`**, not appended
-to `event.system`; this deployment's provider/model ignores appended system parts and
-was inconsistent with message-level system messages, while user-message content is used.
+Recall is injected **twice** for reliability: appended to `event.system` and inserted
+as a transient user message in `event.messages`. This deployment's provider/model ignored
+either channel alone but used the fact when both carried it.
 The same query reuses the cached block across tool continuations (one recall API call
 per turn). Each hit is reduced to its first fact sentence (text before the first `##`)
 and clipped to 240 characters; otherwise legacy batch text makes the memory ambiguous.
