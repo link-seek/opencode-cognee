@@ -203,7 +203,7 @@ test("buildTranscript keeps user/assistant text and drops tool output", () => {
 
 test("renderMemory wraps hits as untrusted and respects the char budget", () => {
   const out = renderMemory([{ text: "a".repeat(100) }, { text: "b".repeat(100) }], 160)
-  assert.match(out, /scope="private"/)
+  assert.match(out, /长期记忆/)
   assert.match(out, /可作为事实参考/)
   assert.ok(out.length < 400)
 })
@@ -298,7 +298,7 @@ test("plugin: injected identity -> recall uses that identity and injects memory"
     assert.equal(event.system.length, 0)
     const injected = event.messages.find((m) => m.role === "system")
     assert.ok(injected)
-    assert.match(injected.content[0].text, /scope="private"/)
+    assert.match(injected.content[0].text, /长期记忆/)
     // Recall must use the xieyucheng token and its own dataset.
     assert.ok(fake.calls.some((c) => c.path === "/api/v1/recall" && c.who === "xieyucheng"))
   } finally {
