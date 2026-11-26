@@ -451,6 +451,31 @@ org_common (status=published, derived_from_hash, reviewed_by, published_at)
 > 一句话：**“谁能读哪个 dataset”是自带的；“把哪条私有知识抽象成公共知识”是我们写的。**
 > 直接把 private dataset `share` 给团队是自带能力，但那等于把全部私人内容暴露出去，不是“抽象晋升”。
 
+### 7.3.1 晋升流水线放在哪：不在 Cognee 里，是我们的独立服务/任务
+
+```
+OpenCode Pod                          promotion service（我们写，集群内）              Cognee
+┌──────────────────────┐              ┌──────────────────────────────┐              ┌──────────────┐
+│ plugin               │  候选(已抽象) │ 队列 / 去重 / 门槛 / 审核状态  │  service token│ org_common   │
+│  capture → abstract  │ ───────────► │ audit / revoke               │ ───────────► │ (reviewer 写)│
+│  (原文不出 private)   │              │ reviewer CLI/UI              │              │              │
+└──────────────────────┘              └──────────────────────────────┘              └──────────────┘
+```
+
+- **Cognee 不含工作流**：它只有 dataset + 权限；没有“候选/审核/发布/撤销”状态机。
+- **plugin 只做候选**：在用户 Pod 内用会话模型做抽象（去人名/路径/一次性细节），
+  **原文不离开 private dataset**，只把抽象后的文本 + 证据哈希 + user/team 发给 promotion service。
+- **promotion service 是唯一持有 `org_common` 写权限的服务账号**：负责队列、去重、门槛、
+  审核、发布、撤销、审计；reviewer 通过 CLI/UI 操作。
+- **部署形态**：
+  - MVP：K8s CronJob（批量抽象/去重）+ CLI（审核/发布），无长期服务；
+  - 完整：Deployment（review API/UI）+ 定时 worker；队列可用 Postgres/SQLite（独立于 Cognee）。
+- **为什么不写进 Cognee**：会 fork 上游、升级耦合；RBAC 与审计状态也不该塞进存储层。
+- **为什么不全部塞进插件**：插件随 OpenCode 重启、没有独立 RBAC；长 LLM 任务会占会话资源；
+  多实例时队列/审核必须共享。
+
+> 所以准确说法：**晋升流水线是“软件外面”的，但不是第三方 SaaS——是我们自己跑在集群里的一个服务/任务。**
+
 ### 7.4 身份来源（必须先解决）
 
 OpenCode OSS 的 server auth 是**单账号**（`OPENCODE_SERVER_USERNAME/PASSWORD`），没有内建多用户。
