@@ -406,7 +406,7 @@ const plugin: PluginNS.Plugin = {
     const cfg = loadConfig()
     const clients = new Map<string, CogneeClient>()
     const identityCache = new Map<string, { value: string | null; at: number }>()
-    const lastRecall = new Map<string, string>()
+    const recallCache = new Map<string, { sig: string; text: string }>()
     const seenUser = new Set<string>()
     const lastCapture = new Map<string, { hash: string; at: number }>()
 
@@ -514,16 +514,23 @@ const plugin: PluginNS.Plugin = {
         if (!query) return
 
         const signature = hash(query)
-        if (lastRecall.get(event.sessionID) === signature) return
+        const cached = recallCache.get(event.sessionID)
+        if (cached?.sig === signature) {
+          if (cached.text) {
+            event.messages.unshift({ role: "system", content: [{ type: "text", text: cached.text }] } as any)
+          }
+          return
+        }
         const first = !seenUser.has(event.sessionID)
         seenUser.add(event.sessionID)
         if (!first && !cfg.recallEveryTurn && !INTENT_RE.test(query)) return
 
         try {
           const hits = await clientFor(identity).recall(truncate(query, 2_000), cfg.recallTopK)
-          lastRecall.set(event.sessionID, signature)
-          if (hits.length === 0) return
-          event.system.push({ type: "text" as const, text: renderMemory(hits, cfg.maxInjectChars) })
+          const text = hits.length > 0 ? renderMemory(hits, cfg.maxInjectChars) : ""
+          recallCache.set(event.sessionID, { sig: signature, text })
+          if (!text) return
+          event.messages.unshift({ role: "system", content: [{ type: "text", text }] } as any)
           log(cfg, `recalled ${hits.length} hits for ${identity}`)
         } catch (error) {
           warn(`recall failed for ${identity}: ${String(error)}`)
