@@ -42,6 +42,8 @@ export interface Cfg {
   baseUrl: string
   users: Record<string, UserCredential>
   staticToken: string
+  brokerUrl: string
+  brokerToken: string
   defaultUser: string
   allowDefaultIdentity: boolean
   identityKey: string
@@ -98,6 +100,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Cfg {
     baseUrl: (env.COGNEE_BASE_URL ?? "http://cognee.cognee-trial.svc.cluster.local:8001").replace(/\/+$/, ""),
     users,
     staticToken: env.COGNEE_TOKEN ?? "",
+    brokerUrl: (env.COGNEE_BROKER_URL ?? "").replace(/\/+$/, ""),
+    brokerToken: env.COGNEE_BROKER_TOKEN ?? "",
     defaultUser: env.COGNEE_DEFAULT_USER ?? "",
     allowDefaultIdentity: envFlag(env.COGNEE_ALLOW_DEFAULT_IDENTITY, Boolean(env.COGNEE_DEFAULT_USER)),
     identityKey: env.COGNEE_IDENTITY_KEY ?? DEFAULT_IDENTITY_KEY,
@@ -197,6 +201,27 @@ export class CogneeClient {
   }
 
   private async login(): Promise<void> {
+    if (this.cfg.brokerUrl) {
+      const res = await fetch(`${this.cfg.brokerUrl}/token`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.cfg.brokerToken}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ identity: this.identity }),
+        signal: AbortSignal.timeout(Math.min(this.cfg.timeoutMs, 20_000)),
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => "")
+        throw new CogneeError(`token broker rejected ${this.identity}: ${res.status}`, res.status, text.slice(0, 300))
+      }
+      const data = (await res.json()) as { token?: string; expiresAt?: number }
+      if (!data.token) throw new CogneeError("token broker returned no token", 500, "")
+      this.token = data.token
+      this.tokenExpiresAt = data.expiresAt ?? tokenExpiry(this.token) ?? Date.now() + 50 * 60_000
+      log(this.cfg, `broker token for ${this.identity}`)
+      return
+    }
     if (this.cfg.staticToken) {
       if (this.identity !== this.cfg.defaultUser) {
         throw new CogneeError(`static token mode only allows identity ${this.cfg.defaultUser}`, 401, "")
@@ -437,7 +462,9 @@ const plugin: PluginNS.Plugin = {
         log(cfg, `identity lookup failed for ${sessionID}: ${String(error)}`)
         value = cfg.allowDefaultIdentity ? cfg.defaultUser || null : null
       }
-      if (value && cfg.staticToken && value !== cfg.defaultUser) {
+      if (value && cfg.brokerUrl) {
+        // The broker is the authority; unknown identities fail at token time.
+      } else if (value && cfg.staticToken && value !== cfg.defaultUser) {
         warn(`static token mode cannot serve identity ${value}; memory disabled for this session`)
         value = null
       } else if (value && !cfg.staticToken && !cfg.users[value]) {

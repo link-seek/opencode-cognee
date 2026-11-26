@@ -91,7 +91,7 @@ function startFakeCognee() {
 
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
-      resolve({ server, port: server.address().port, calls, datasets, memories, seeds })
+      resolve({ server, port: server.address().port, calls, datasets, memories, seeds, tokens })
     })
   })
 }
@@ -212,6 +212,39 @@ test("renderMemory wraps hits and respects the char budget", () => {
   assert.match(out, /长期记忆/)
   assert.match(out, /可作为事实参考/)
   assert.ok(out.length < 400)
+})
+
+test("Cognee client: broker token provider", async () => {
+  const fake = await startFakeCognee()
+  fake.tokens.set("broker-token", "xieyucheng")
+  const brokerCalls = []
+  const broker = createServer(async (req, res) => {
+    const chunks = []
+    for await (const c of req) chunks.push(c)
+    brokerCalls.push({ auth: req.headers.authorization, body: Buffer.concat(chunks).toString() })
+    res.writeHead(200, { "content-type": "application/json" })
+    res.end(JSON.stringify({ token: "broker-token", expiresAt: Date.now() + 3_600_000 }))
+  })
+  await new Promise((r) => broker.listen(0, "127.0.0.1", r))
+  const brokerPort = broker.address().port
+  try {
+    const cfg = cfgFor(fake.port, {
+      COGNEE_BROKER_URL: `http://127.0.0.1:${brokerPort}`,
+      COGNEE_BROKER_TOKEN: "broker-secret",
+      COGNEE_USERS: "{}",
+    })
+    const client = new CogneeClient(cfg, "xieyucheng")
+    const ds = await client.ensureDataset()
+    assert.match(ds, /^[0-9a-f-]{36}$/)
+    assert.equal(brokerCalls.length, 1)
+    assert.equal(brokerCalls[0].auth, "Bearer broker-secret")
+    assert.match(brokerCalls[0].body, /xieyucheng/)
+    // The client must use the broker token, not a direct /auth/login call.
+    assert.equal(fake.calls.filter((c) => c.path === "/api/v1/auth/login").length, 0)
+  } finally {
+    broker.close()
+    fake.server.close()
+  }
 })
 
 /** Minimal plugin host that records hooks and tools. */
