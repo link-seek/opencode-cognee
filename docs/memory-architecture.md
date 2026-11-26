@@ -77,6 +77,34 @@ Claude Code 把记忆拆成**两种作者、两层机制**：
 > 与 Claude 的 `user/feedback/project/reference` 对应：profile≈user，semantic≈feedback+project，
 > reference 同名；episodic 是 Claude 不显式存、但 Codex Memories 会总结的那层。
 
+### 2.5 分层：记忆协议（vendor-neutral）vs 适配器
+
+**蒸馏质量、对账规则、评估、治理，和接 OpenCode / cognee / 任何具体工具无关**。
+它们属于“记忆协议”层；工具只提供执行原语。正确的切分是：
+
+| 层 | 内容 | 是否依赖工具 |
+|---|---|---|
+| **记忆协议** | 分类、写入/读取规则、对账、取代、生命周期、评估、治理 | **否** |
+| **能力契约** | 后端必须提供的最小原语（下表） | 只依赖“能力”，不依赖品牌 |
+| **适配器** | OpenCode plugin hooks；cognee MCP/REST；文件 vault | 是 |
+
+**能力契约（后端最小要求）**：
+
+| 原语 | 用途 | 缺失时的降级 |
+|---|---|---|
+| append(episode, id, ts, scope, provenance) | 捕获 | 无法做，直接不可用 |
+| retrieve(query, scope, top_k) → 稳定 id | 召回/对账 | 只能全量扫文件 |
+| update / supersede / delete by id | 对账、取代、清理 | 只能“时间戳 + 过滤”，取代不可追溯 |
+| filter by scope/project/type | 隔离与精度 | 检索后客户端过滤（成本更高） |
+| export / import | 迁移、备份 | 锁死单一后端 |
+| （增强，非必需）graph / temporal / conflict / importance | 提升蒸馏与排序 | 用文件索引 + 规则替代 |
+
+**结论**：
+- 协议层可以独立成文、独立测试；换宿主或换后端只改适配器。
+- 但“无关”不等于“零成本”：如果后端只有 append+retrieve（纯向量库），
+  对账会降级为“时间戳+过滤”，取代/冲突不可追溯——这时要么用文件层做权威副本，
+  要么换一个满足契约的后端。**约束来自能力，不来自品牌。**
+
 ---
 
 ## 3. 总体架构
