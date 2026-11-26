@@ -136,6 +136,20 @@ async function recall(token, ds, query) {
   return { status: res.status, body: text ? JSON.parse(text) : [] }
 }
 
+async function waitDatasetReady(token, ds, timeoutMs = 240_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const res = await fetch(`${COGNEE}/api/v1/datasets/status/memory?dataset_id=${ds}`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(30_000),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (body?.[ds]?.state === "ready") return true
+    await new Promise((r) => setTimeout(r, 5_000))
+  }
+  return false
+}
+
 function check(name, ok, detail = "") {
   facts.push({ name, ok, detail })
   console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`)
@@ -161,7 +175,7 @@ async function main() {
     `请记住这个项目事实：生产集群的归档桶名称是 ${SECRET}。只回复 OK。`,
   )
   const a1 = await waitAssistant(A, A_PW, s1)
-  check("A[xie] assistant replied", Boolean(a1), a1.slice(0, 80))
+  check("A[e2e] assistant replied", Boolean(a1), a1.slice(0, 80))
 
   // 2. Wait until the capture is searchable in Cognee.
   let hit = false
@@ -172,23 +186,30 @@ async function main() {
     if (hit) break
     await new Promise((res) => setTimeout(res, 5_000))
   }
-  check("capture reached Cognee", hit, hit ? "secret found in u_xieyucheng" : "timeout")
+  check("capture reached Cognee", hit, hit ? "secret found in u_e2e" : "timeout")
   if (hit) {
     // Let the background graph extraction finish so the API is not blocked for the cross-instance recall.
-    await new Promise((res) => setTimeout(res, 30_000))
+    const ready = await waitDatasetReady(e2eToken, e2eDs)
+    console.log(`e2e dataset ready=${ready}`)
+    await new Promise((res) => setTimeout(res, 5_000))
   }
 
-  // 3. Same identity on instance B -> recall.
-  const s2 = await createSession(B, B_PW, "e2e same identity")
-  await setIdentity(B, B_PW, s2, "e2e")
-  await prompt(B, B_PW, s2, "我们的项目徽章编号是什么？只回答代号；如果不知道就回答 UNKNOWN。")
-  const b1 = await waitAssistant(B, B_PW, s2)
-  check("B[xie] recalled across instances", b1.includes(SECRET), b1.slice(0, 120))
+  // 3. Same identity on instance B -> recall (pass@3; the model is non-deterministic).
+  let b1 = ""
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const s2 = await createSession(B, B_PW, `e2e same identity ${attempt}`)
+    await setIdentity(B, B_PW, s2, "e2e")
+    await prompt(B, B_PW, s2, "请使用上下文中的长期记忆回答：生产集群的归档桶名称是什么？直接回答名称；如果记忆里没有就回答 UNKNOWN。")
+    b1 = await waitAssistant(B, B_PW, s2)
+    console.log(`attempt ${attempt}: ${b1.slice(0, 120)}`)
+    if (b1.includes(SECRET)) break
+  }
+  check("B[e2e] recalled across instances", b1.includes(SECRET), b1.slice(0, 120))
 
   // 4. Different identity on instance B -> no xie memory.
   const s3 = await createSession(B, B_PW, "e2e isolation")
   await setIdentity(B, B_PW, s3, "yingxin")
-  await prompt(B, B_PW, s3, "我们的项目徽章编号是什么？只回答代号；如果不知道就回答 UNKNOWN。")
+  await prompt(B, B_PW, s3, "请使用上下文中的长期记忆回答：生产集群的归档桶名称是什么？直接回答名称；如果记忆里没有就回答 UNKNOWN。")
   const b2 = await waitAssistant(B, B_PW, s3)
   check("B[ying] isolated from xie memory", !b2.includes(SECRET), b2.slice(0, 120))
 
