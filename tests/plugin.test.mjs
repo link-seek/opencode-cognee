@@ -296,7 +296,7 @@ test("plugin: injected identity -> recall uses that identity and injects memory"
     const event = { sessionID: "s2", system: [], messages: [{ role: "user", content: "what did we decide about k3s?" }] }
     await host.hooks.context(event)
     assert.equal(event.system.length, 1)
-    assert.match(event.system[0].text, /trust="untrusted"/)
+    assert.match(event.system[0].text, /scope="private"/)
     // Recall must use the xieyucheng token and its own dataset.
     assert.ok(fake.calls.some((c) => c.path === "/api/v1/recall" && c.who === "xieyucheng"))
   } finally {
