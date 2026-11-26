@@ -64,6 +64,7 @@ test("recall wraps hits in cognee_memories, blank query skips network", async ()
     }
     assert.equal(body.params.name, "recall")
     assert.equal(body.params.arguments.top_k, 5)
+    assert.equal(body.params.arguments.search_type, "CHUNKS")
     return {
       ok: true,
       headers: new Headers(),
@@ -73,7 +74,7 @@ test("recall wraps hits in cognee_memories, blank query skips network", async ()
   try {
     const { McpClient, recall } = await import("../.opencode/plugins/cognee/index.ts")
     const cfg = { baseUrl: "http://x", apiKey: "", dataset: "d", capture: true, recall: true, timeoutMs: 1000, maxChars: 8000 }
-    const out = await recall(cfg, new McpClient(cfg), "q")
+    const out = await recall(cfg, new McpClient(cfg), "q", 5, "CHUNKS")
     assert.match(out, /cognee_memories/)
     const before = calls
     assert.equal(await recall(cfg, new McpClient(cfg), "   "), "")

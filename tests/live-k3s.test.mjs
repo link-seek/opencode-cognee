@@ -36,7 +36,7 @@ test("live round-trip: remember(bg) -> poll recall -> forget dataset", async (t)
     for (let i = 0; i < 24; i++) {
       await sleep(30000)
       try {
-        const out = await recall(cfg, client, stamp, 3)
+        const out = await recall(cfg, client, stamp, 3, "CHUNKS")
         // server "warming up" (no graph yet) is not a hit
         if (out.length > 100 && !out.includes("warming up") && !out.includes("no matching memories")) {
           hit = out
