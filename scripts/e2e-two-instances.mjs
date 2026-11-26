@@ -158,7 +158,7 @@ async function main() {
     A,
     A_PW,
     s1,
-    `请记住这个项目事实：生产集群的 NTP 服务器地址是 ${SECRET}。只回复 OK。`,
+    `请记住这个项目事实：生产集群的备份桶名称是 ${SECRET}。只回复 OK。`,
   )
   const a1 = await waitAssistant(A, A_PW, s1)
   check("A[xie] assistant replied", Boolean(a1), a1.slice(0, 80))

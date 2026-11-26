@@ -516,7 +516,7 @@ const plugin: PluginNS.Plugin = {
         const cached = recallCache.get(event.sessionID)
         if (cached?.sig === signature) {
           if (cached.text) {
-            event.messages.unshift({ role: "system", content: [{ type: "text", text: cached.text }] } as any)
+            event.messages.unshift({ role: "user", content: [{ type: "text", text: cached.text }] } as any)
           }
           return
         }
@@ -529,7 +529,7 @@ const plugin: PluginNS.Plugin = {
           const text = hits.length > 0 ? renderMemory(hits, cfg.maxInjectChars) : ""
           recallCache.set(event.sessionID, { sig: signature, text })
           if (!text) return
-          event.messages.unshift({ role: "system", content: [{ type: "text", text }] } as any)
+          event.messages.unshift({ role: "user", content: [{ type: "text", text }] } as any)
           log(cfg, `recalled ${hits.length} hits for ${identity}`)
         } catch (error) {
           warn(`recall failed for ${identity}: ${String(error)}`)

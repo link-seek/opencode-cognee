@@ -302,7 +302,7 @@ test("plugin: injected identity -> recall uses that identity and injects memory"
     const event = { sessionID: "s2", system: [], messages: [{ role: "user", content: "what did we decide about k3s?" }] }
     await host.hooks.context(event)
     assert.equal(event.system.length, 0)
-    const injected = event.messages.find((m) => m.role === "system")
+    const injected = event.messages.find((m) => m.role === "user" && JSON.stringify(m.content).includes("长期记忆"))
     assert.ok(injected)
     assert.match(injected.content[0].text, /长期记忆/)
     // Recall must use the xieyucheng token and its own dataset.
