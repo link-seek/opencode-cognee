@@ -153,7 +153,7 @@ async function main() {
     A,
     A_PW,
     s1,
-    `请记住这个项目事实：内部实验代号是 ${SECRET}，部署在 k3s 上使用 Flux。只回复 OK。`,
+    `请记住这个项目事实：项目徽章编号是 ${SECRET}，部署在 k3s 上使用 Flux。只回复 OK。`,
   )
   const a1 = await waitAssistant(A, A_PW, s1)
   check("A[xie] assistant replied", Boolean(a1), a1.slice(0, 80))
@@ -172,14 +172,14 @@ async function main() {
   // 3. Same identity on instance B -> recall.
   const s2 = await createSession(B, B_PW, "e2e same identity")
   await setIdentity(B, B_PW, s2, "xieyucheng")
-  await prompt(B, B_PW, s2, "我们的内部实验代号是什么？只回答代号；如果不知道就回答 UNKNOWN。")
+  await prompt(B, B_PW, s2, "我们的项目徽章编号是什么？只回答代号；如果不知道就回答 UNKNOWN。")
   const b1 = await waitAssistant(B, B_PW, s2)
   check("B[xie] recalled across instances", b1.includes(SECRET), b1.slice(0, 120))
 
   // 4. Different identity on instance B -> no xie memory.
   const s3 = await createSession(B, B_PW, "e2e isolation")
   await setIdentity(B, B_PW, s3, "yingxin")
-  await prompt(B, B_PW, s3, "我们的内部实验代号是什么？只回答代号；如果不知道就回答 UNKNOWN。")
+  await prompt(B, B_PW, s3, "我们的项目徽章编号是什么？只回答代号；如果不知道就回答 UNKNOWN。")
   const b2 = await waitAssistant(B, B_PW, s3)
   check("B[ying] isolated from xie memory", !b2.includes(SECRET), b2.slice(0, 120))
 
