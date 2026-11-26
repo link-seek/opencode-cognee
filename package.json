@@ -1,18 +1,20 @@
 {
   "name": "@linkseek/opencode-cognee",
-  "version": "0.1.0",
-  "description": "OpenCode v2 native plugin for Cognee persistent memory (auto-recall + auto-capture)",
+  "version": "0.2.0",
+  "description": "OpenCode v2 long-term memory plugin backed by Cognee REST (per-user datasets, auto-recall, idle capture)",
   "type": "module",
   "main": ".opencode/plugins/cognee/index.ts",
   "files": [
     ".opencode/",
+    "scripts/",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/plugin.test.mjs",
-    "test:live": "node --test tests/live-k3s.test.mjs"
+    "migrate": "node scripts/migrate-mem.mjs",
+    "provision": "node scripts/provision-users.mjs"
   },
   "dependencies": {
     "@opencode/plugin": "2.3.0"
@@ -25,7 +27,8 @@
     "opencode",
     "opencode-plugin",
     "cognee",
-    "memory"
+    "memory",
+    "multi-user"
   ],
   "license": "MIT",
   "repository": {
