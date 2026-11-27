@@ -11,11 +11,32 @@
  * - Secrets are scrubbed before anything leaves the process.
  */
 
-import { createHash } from "node:crypto"
 import type { Plugin as PluginNS } from "@opencode/plugin"
+import {
+  DEFAULT_DATASET_PREFIX,
+  DEFAULT_IDENTITY_KEY,
+  buildTranscript,
+  hash,
+  parseUsers,
+  renderMemory,
+  safeDatasetName,
+  scrub,
+  truncate,
+  type RecallHit,
+  type SessionMessage,
+  type UserCredential,
+} from "./lib.ts"
 
-export const DEFAULT_IDENTITY_KEY = "auth.user_id"
-export const DEFAULT_DATASET_PREFIX = "u_"
+// Named budgets (ms unless noted). Recall runs on the prompt path: keep the
+// recall budget short and fail-open so a slow Cognee never stalls the user.
+const BROKER_LOGIN_CAP_MS = 20_000
+const DIRECT_LOGIN_CAP_MS = 20_000
+const REMEMBER_TIMEOUT_MS = 150_000
+const RECALL_TIMEOUT_MS = 20_000
+const BREAKER_OPEN_MS = 60_000
+const BREAKER_THRESHOLD = 3
+const LOGIN_COOLDOWN_MS = 45_000
+const CAPTURE_FAIL_BACKOFF_MS = 300_000
 
 const INTENT_RE =
   /(上次|之前|以前|历史|记得|回忆|为什么|当初|当时|决定|结论|踩坑|教训|约定|规范|previous|last time|remember|earlier|decision|why did|what did we)/i
@@ -33,10 +54,18 @@ Rules:
 - If nothing is worth keeping, output exactly: SKIP
 - Write in the same language as the transcript.`
 
-export interface UserCredential {
-  email: string
-  password: string
-}
+export {
+  buildTranscript,
+  hash,
+  parseUsers,
+  renderMemory,
+  safeDatasetName,
+  scrub,
+  truncate,
+  type RecallHit,
+  type SessionMessage,
+  type UserCredential,
+} from "./lib.ts"
 
 export interface Cfg {
   baseUrl: string
@@ -60,6 +89,8 @@ export interface Cfg {
   debug: boolean
 }
 
+export { DEFAULT_DATASET_PREFIX, DEFAULT_IDENTITY_KEY } from "./lib.ts"
+
 function envFlag(value: string | undefined, dflt: boolean) {
   if (value === undefined || value === "") return dflt
   return !["0", "false", "no", "off"].includes(value.toLowerCase())
@@ -68,24 +99,6 @@ function envFlag(value: string | undefined, dflt: boolean) {
 function envInt(value: string | undefined, dflt: number) {
   const n = Number(value)
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : dflt
-}
-
-/** Parse `COGNEE_USERS` (JSON map of identity -> {email,password}). Invalid entries are dropped. */
-export function parseUsers(raw: string | undefined): Record<string, UserCredential> {
-  if (!raw) return {}
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    const out: Record<string, UserCredential> = {}
-    for (const [identity, value] of Object.entries(parsed)) {
-      const v = value as Partial<UserCredential>
-      if (typeof v?.email === "string" && typeof v?.password === "string" && v.email && v.password) {
-        out[identity] = { email: v.email, password: v.password }
-      }
-    }
-    return out
-  } catch {
-    return {}
-  }
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Cfg {
@@ -127,34 +140,6 @@ function warn(...args: unknown[]) {
   console.error("[opencode-cognee]", ...args)
 }
 
-/** Redact credential-shaped content before it leaves the process. */
-export function scrub(text: string): string {
-  return text
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]")
-    .replace(/(api[_-]?key|token|secret|password|passwd|pwd|auth|bearer|access[_-]?key)\s*[:=]\s*['"]?[^\s'"]+/gi, "$1=[REDACTED]")
-    .replace(/\b(AKIA|SK|ghp_|gho_|ghu_|xox[abp]|sk-)[A-Za-z0-9_\-]{12,}\b/g, "[REDACTED]")
-    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED JWT]")
-}
-
-export function truncate(text: string, max: number): string {
-  return text.length > max ? text.slice(0, max) + "\n[truncated]" : text
-}
-
-export function safeDatasetName(identity: string, prefix: string): string {
-  const safe = identity
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, "_")
-    .replace(/_+/g, "_")
-    .replace(/^_+/, "")
-    .slice(0, 64)
-  return `${prefix}${safe}`
-}
-
-export function hash(text: string): string {
-  return createHash("sha256").update(text).digest("hex").slice(0, 16)
-}
-
 function tokenExpiry(token: string): number {
   try {
     const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"))
@@ -175,12 +160,6 @@ export class CogneeError extends Error {
   }
 }
 
-interface RecallHit {
-  text: string
-  dataset?: string
-  source?: string
-}
-
 /** Minimal Cognee REST client bound to one identity. */
 export class CogneeClient {
   private token = ""
@@ -188,6 +167,10 @@ export class CogneeClient {
   private readonly datasets = new Map<string, string>()
   private failures = 0
   private openUntil = 0
+  private loginInflight: Promise<void> | null = null
+  private datasetInflight: Promise<string> | null = null
+  private loginCooldownUntil = 0
+  private lastLoginError: unknown = null
   readonly cfg: Cfg
   readonly identity: string
 
@@ -209,7 +192,7 @@ export class CogneeClient {
           "content-type": "application/json",
         },
         body: JSON.stringify({ identity: this.identity }),
-        signal: AbortSignal.timeout(Math.min(this.cfg.timeoutMs, 20_000)),
+        signal: AbortSignal.timeout(Math.min(this.cfg.timeoutMs, BROKER_LOGIN_CAP_MS)),
       })
       if (!res.ok) {
         const text = await res.text().catch(() => "")
@@ -218,7 +201,8 @@ export class CogneeClient {
       const data = (await res.json()) as { token?: string; expiresAt?: number }
       if (!data.token) throw new CogneeError("token broker returned no token", 500, "")
       this.token = data.token
-      this.tokenExpiresAt = data.expiresAt ?? tokenExpiry(this.token) ?? Date.now() + 50 * 60_000
+      // NOTE: `||`, not `??` — tokenExpiry() returns 0 (not nullish) for opaque tokens.
+      this.tokenExpiresAt = data.expiresAt || tokenExpiry(this.token) || Date.now() + 50 * 60_000
       log(this.cfg, `broker token for ${this.identity}`)
       return
     }
@@ -242,7 +226,7 @@ export class CogneeClient {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body,
-      signal: AbortSignal.timeout(Math.min(this.cfg.timeoutMs, 20_000)),
+      signal: AbortSignal.timeout(Math.min(this.cfg.timeoutMs, DIRECT_LOGIN_CAP_MS)),
     })
     if (!res.ok) {
       const text = await res.text().catch(() => "")
@@ -257,7 +241,27 @@ export class CogneeClient {
 
   private async ensureToken(force = false): Promise<void> {
     if (!force && this.token && Date.now() < this.tokenExpiresAt - 30_000) return
-    await this.login()
+    if (!force && this.loginInflight) {
+      await this.loginInflight
+      return
+    }
+    if (!force && Date.now() < this.loginCooldownUntil) throw this.lastLoginError
+    const attempt = (async () => {
+      try {
+        await this.login()
+      } catch (error) {
+        // Negative result: back off so bad credentials don't hammer Cognee per query.
+        this.loginCooldownUntil = Date.now() + LOGIN_COOLDOWN_MS
+        this.lastLoginError = error
+        throw error
+      }
+    })()
+    if (!force) this.loginInflight = attempt
+    try {
+      await attempt
+    } finally {
+      if (!force && this.loginInflight === attempt) this.loginInflight = null
+    }
   }
 
   private breakerOpen(): boolean {
@@ -266,14 +270,24 @@ export class CogneeClient {
 
   private tripBreaker() {
     this.failures++
-    if (this.failures >= 3) {
-      this.openUntil = Date.now() + 60_000
+    if (this.failures >= BREAKER_THRESHOLD) {
+      this.openUntil = Date.now() + BREAKER_OPEN_MS
       this.failures = 0
       warn(`Cognee circuit open for ${this.identity} (60s)`)
     }
   }
 
-  private async request(path: string, init: RequestInit = {}, timeoutMs?: number, retry = true): Promise<Response> {
+  /**
+   * `rebuildBody` rebuilds a one-shot request body (e.g. FormData) for the 401
+   * retry; without it a consumed multipart body would be re-sent empty.
+   */
+  private async request(
+    path: string,
+    init: RequestInit = {},
+    timeoutMs?: number,
+    retry = true,
+    rebuildBody?: () => BodyInit,
+  ): Promise<Response> {
     if (this.breakerOpen()) throw new CogneeError("Cognee circuit open", 503, "")
     await this.ensureToken()
     const headers = new Headers(init.headers)
@@ -291,10 +305,20 @@ export class CogneeClient {
     }
     if (res.status === 401 && retry) {
       await this.ensureToken(true)
-      return this.request(path, init, timeoutMs, false)
+      return this.request(
+        path,
+        rebuildBody ? { ...init, body: rebuildBody() } : init,
+        timeoutMs,
+        false,
+      )
     }
     if (!res.ok) {
       const text = await res.text().catch(() => "")
+      // Deterministic client errors (ACL, bad request) must not open the circuit:
+      // retrying them is pointless and would DoS this identity's memory for 60s.
+      if (res.status >= 400 && res.status < 500) {
+        throw new CogneeError(`Cognee ${init.method ?? "GET"} ${path} -> ${res.status}`, res.status, text.slice(0, 500))
+      }
       this.tripBreaker()
       throw new CogneeError(`Cognee ${init.method ?? "GET"} ${path} -> ${res.status}`, res.status, text.slice(0, 500))
     }
@@ -302,111 +326,126 @@ export class CogneeClient {
     return res
   }
 
+  /** Forget a cached dataset id (e.g. after a 403/404 using it). */
+  dropDataset(): void {
+    this.datasets.delete(safeDatasetName(this.identity, this.cfg.datasetPrefix))
+  }
+
   async ensureDataset(): Promise<string> {
     const name = safeDatasetName(this.identity, this.cfg.datasetPrefix)
     const cached = this.datasets.get(name)
     if (cached) return cached
-    const listed = (await (await this.request("/api/v1/datasets")).json()) as Array<{ id: string; name: string }>
-    const found = listed.find((d) => d.name === name)
-    if (found) {
-      this.datasets.set(name, found.id)
-      return found.id
+    if (this.datasetInflight) return this.datasetInflight
+    const run = (async () => {
+      const listed = (await (await this.request("/api/v1/datasets")).json()) as Array<{ id: string; name: string }>
+      const found = listed.find((d) => d.name === name)
+      if (found) {
+        this.datasets.set(name, found.id)
+        return found.id
+      }
+      try {
+        const res = await this.request("/api/v1/datasets", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name }),
+        })
+        const created = (await res.json()) as { id: string; name: string }
+        // Cache under the requested name: server-side normalization must not
+        // defeat the cache on the next call.
+        this.datasets.set(name, created.id)
+        log(this.cfg, `created dataset ${created.name}`)
+        return created.id
+      } catch (error) {
+        if (error instanceof CogneeError && error.status === 409) {
+          // Lost a create race: re-list and use the winner's id.
+          const relisted = (await (await this.request("/api/v1/datasets")).json()) as Array<{
+            id: string
+            name: string
+          }>
+          const winner = relisted.find((d) => d.name === name)
+          if (winner) {
+            this.datasets.set(name, winner.id)
+            return winner.id
+          }
+        }
+        throw error
+      }
+    })()
+    this.datasetInflight = run
+    try {
+      return await run
+    } finally {
+      if (this.datasetInflight === run) this.datasetInflight = null
     }
-    const res = await this.request("/api/v1/datasets", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name }),
-    })
-    const created = (await res.json()) as { id: string; name: string }
-    this.datasets.set(created.name, created.id)
-    log(this.cfg, `created dataset ${created.name}`)
-    return created.id
+  }
+
+  /** Run `fn` with the dataset id; on 403/404 evict the cached id and retry once. */
+  private async withFreshDataset<T>(fn: (datasetId: string) => Promise<T>): Promise<T> {
+    try {
+      return await fn(await this.ensureDataset())
+    } catch (error) {
+      if (error instanceof CogneeError && (error.status === 403 || error.status === 404)) {
+        this.dropDataset()
+        return fn(await this.ensureDataset())
+      }
+      throw error
+    }
   }
 
   async remember(text: string, nodeSets: string[]): Promise<void> {
-    const datasetId = await this.ensureDataset()
-    const form = new FormData()
-    form.append("raw_data", text)
-    form.append("datasetId", datasetId)
-    for (const tag of nodeSets) form.append("node_set", tag)
-    form.append("self_improvement", "false")
-    form.append("run_in_background", "true")
-    await this.request("/api/v1/remember", { method: "POST", body: form }, 150_000)
+    const buildForm = (datasetId: string) => {
+      const form = new FormData()
+      form.append("raw_data", text)
+      form.append("datasetId", datasetId)
+      for (const tag of nodeSets) form.append("node_set", tag)
+      form.append("self_improvement", "false")
+      form.append("run_in_background", "true")
+      return form
+    }
+    await this.withFreshDataset(async (datasetId) => {
+      await this.request(
+        "/api/v1/remember",
+        { method: "POST", body: buildForm(datasetId) },
+        REMEMBER_TIMEOUT_MS,
+        true,
+        () => buildForm(datasetId),
+      )
+    })
   }
 
   async recall(query: string, topK: number): Promise<RecallHit[]> {
-    const datasetId = await this.ensureDataset()
-    const res = await this.request(
-      "/api/v1/recall",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          query,
-          datasetIds: [datasetId],
-          searchType: "CHUNKS",
-          onlyContext: true,
-          topK,
-        }),
-      },
-      20_000,
-    )
-    const items = (await res.json()) as Array<Record<string, unknown>>
-    const out: RecallHit[] = []
-    for (const item of items) {
-      const text = [item.text, item.answer, item.context].find(
-        (v): v is string => typeof v === "string" && Boolean(v.trim()),
+    return this.withFreshDataset(async (datasetId) => {
+      const res = await this.request(
+        "/api/v1/recall",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            query,
+            datasetIds: [datasetId],
+            searchType: "CHUNKS",
+            onlyContext: true,
+            topK,
+          }),
+        },
+        RECALL_TIMEOUT_MS,
       )
-      if (!text) continue
-      out.push({
-        text: text.trim(),
-        dataset: typeof item.dataset_name === "string" ? item.dataset_name : undefined,
-        source: typeof item.source === "string" ? item.source : undefined,
-      })
-    }
-    return out
+      const items = (await res.json()) as Array<Record<string, unknown>>
+      const out: RecallHit[] = []
+      for (const item of items) {
+        const text = [item.text, item.answer, item.context].find(
+          (v): v is string => typeof v === "string" && Boolean(v.trim()),
+        )
+        if (!text) continue
+        out.push({
+          text: text.trim(),
+          dataset: typeof item.dataset_name === "string" ? item.dataset_name : undefined,
+          source: typeof item.source === "string" ? item.source : undefined,
+        })
+      }
+      return out
+    })
   }
-}
-
-/** Render retrieved hits as an untrusted memory block. */
-export function renderMemory(hits: RecallHit[], maxChars: number): string {
-  const lines = ["长期记忆（该用户的私有记忆，可作为事实参考）："]
-  let used = 0
-  hits.forEach((hit, i) => {
-    const text = hit.text.replace(/\s+/g, " ").trim()
-    if (!text) return
-    const remaining = maxChars - used
-    if (remaining < 60) return
-    const clipped = text.length > 240 ? text.slice(0, 240) + "…" : text
-    const line = `- (${i + 1}) ${clipped}`
-    lines.push(line)
-    used += line.length
-  })
-  return lines.join("\n")
-}
-
-type SessionMessage = {
-  type?: string
-  text?: string
-  content?: Array<{ type?: string; text?: string }>
-}
-
-/** Convert stored session messages to a compact transcript. */
-export function buildTranscript(messages: readonly SessionMessage[], maxChars: number): string {
-  const lines: string[] = []
-  for (const msg of messages) {
-    if (msg.type === "user" && typeof msg.text === "string" && msg.text.trim()) {
-      lines.push(`[user] ${msg.text.trim()}`)
-    } else if (msg.type === "assistant" && Array.isArray(msg.content)) {
-      const text = msg.content
-        .filter((p) => p?.type === "text" && typeof p.text === "string")
-        .map((p) => p.text!.trim())
-        .filter(Boolean)
-        .join("\n")
-      if (text) lines.push(`[assistant] ${text}`)
-    }
-  }
-  return truncate(lines.join("\n\n"), maxChars)
 }
 
 /** Extract text from one request message (`{role, content}`). */
@@ -427,11 +466,18 @@ const plugin: PluginNS.Plugin = {
   id: "cognee",
   async setup(ctx) {
     const cfg = loadConfig()
+    if (cfg.brokerUrl && Object.keys(cfg.users).length > 0) {
+      // Defense in depth: in broker mode the pods must hold only the broker token.
+      // Plaintext Cognee passwords in pod env defeat the isolation model.
+      warn(`COGNEE_USERS is set but ignored in broker mode for ${Object.keys(cfg.users).join(",")}; keep passwords only in the broker Secret`)
+    }
     const clients = new Map<string, CogneeClient>()
     const identityCache = new Map<string, { value: string | null; at: number }>()
-    const recallCache = new Map<string, { sig: string; text: string }>()
+    const recallCache = new Map<string, { sig: string; text: string; identity: string }>()
     const seenUser = new Set<string>()
     const lastCapture = new Map<string, { hash: string; at: number }>()
+    const captureInflight = new Set<string>()
+    const captureFailAt = new Map<string, number>()
 
     const clientFor = (identity: string) => {
       let client = clients.get(identity)
@@ -459,11 +505,15 @@ const plugin: PluginNS.Plugin = {
           value = cfg.defaultUser || null
         }
       } catch (error) {
+        // Fail closed: a lookup error must never bind the session to the shared
+        // default identity (that would mix tenants' recall/capture). The default
+        // applies only when the lookup succeeded and found no entry.
         log(cfg, `identity lookup failed for ${sessionID}: ${String(error)}`)
-        value = cfg.allowDefaultIdentity ? cfg.defaultUser || null : null
+        value = null
       }
       if (value && cfg.brokerUrl) {
-        // The broker is the authority; unknown identities fail at token time.
+        // No local credential check: the broker is the authority and rejects
+        // unknown identities at token time (fail-closed there too).
       } else if (value && cfg.staticToken && value !== cfg.defaultUser) {
         warn(`static token mode cannot serve identity ${value}; memory disabled for this session`)
         value = null
@@ -477,6 +527,19 @@ const plugin: PluginNS.Plugin = {
 
     const currentNodeSets = () => ["episode", `date:${new Date().toISOString().slice(0, 10)}`]
 
+    /**
+     * Inject recalled memory into both channels. Dual injection is deliberate:
+     * the `event.system` block is the canonical channel, while the transient
+     * user message is a workaround for providers that under-weight appended
+     * system content (verified: recall broke when the user-channel copy was
+     * removed). Do not "dedupe" this without re-running the two-instance E2E.
+     * See README "Recall injection" for the full rationale.
+     */
+    const injectMemory = (event: { messages: unknown[]; system: unknown[] }, text: string) => {
+      event.messages.unshift({ role: "user", content: [{ type: "text", text }] } as never)
+      event.system.push({ type: "text", text } as never)
+    }
+
     if (cfg.capture) {
       await ctx.session.hook("experimental.idle", async ({ sessionID, background }) => {
         if (background.length > 0) return // let background work finish; idle fires again
@@ -484,6 +547,10 @@ const plugin: PluginNS.Plugin = {
         if (!identity) return
         const previous = lastCapture.get(sessionID)
         if (previous && Date.now() - previous.at < cfg.idleDebounceMs) return
+        const failAt = captureFailAt.get(sessionID) ?? 0
+        if (Date.now() - failAt < CAPTURE_FAIL_BACKOFF_MS) return
+        if (captureInflight.has(sessionID)) return // concurrent idle: one capture at a time
+        captureInflight.add(sessionID)
 
         try {
           const messages = await ctx.session.context({ sessionID })
@@ -512,8 +579,10 @@ const plugin: PluginNS.Plugin = {
           }
 
           if (!summary) {
-            // Deterministic fallback: keep a scrubbed, short trace without another LLM call.
-            summary = `## Request\n${truncate(transcript, 1_800)}\n\n## Tags\ncapture-fallback`
+            // Skip: persisting raw transcript when the distiller (the safety
+            // layer) failed would store the most secret-rich text verbatim.
+            lastCapture.set(sessionID, { hash: transcriptHash, at: Date.now() })
+            return
           }
           if (/^SKIP$/i.test(summary)) {
             lastCapture.set(sessionID, { hash: transcriptHash, at: Date.now() })
@@ -525,6 +594,9 @@ const plugin: PluginNS.Plugin = {
           log(cfg, `captured episode for ${identity} (${cleaned.length} chars)`)
         } catch (error) {
           warn(`capture failed for ${identity}: ${String(error)}`)
+          captureFailAt.set(sessionID, Date.now())
+        } finally {
+          captureInflight.delete(sessionID)
         }
       })
     }
@@ -540,11 +612,10 @@ const plugin: PluginNS.Plugin = {
 
         const signature = hash(query)
         const cached = recallCache.get(event.sessionID)
-        if (cached?.sig === signature) {
-          if (cached.text) {
-            event.messages.unshift({ role: "user", content: [{ type: "text", text: cached.text }] } as any)
-            event.system.push({ type: "text", text: cached.text } as any)
-          }
+        // The cache entry carries its identity: a session rebound to another
+        // identity must never receive the previous identity's memory block.
+        if (cached && cached.identity === identity && cached.sig === signature) {
+          if (cached.text) injectMemory(event as unknown as { messages: unknown[]; system: unknown[] }, cached.text)
           return
         }
         const first = !seenUser.has(event.sessionID)
@@ -554,10 +625,9 @@ const plugin: PluginNS.Plugin = {
         try {
           const hits = await clientFor(identity).recall(truncate(query, 2_000), cfg.recallTopK)
           const text = hits.length > 0 ? renderMemory(hits, cfg.maxInjectChars) : ""
-          recallCache.set(event.sessionID, { sig: signature, text })
+          recallCache.set(event.sessionID, { sig: signature, text, identity })
           if (!text) return
-          event.messages.unshift({ role: "user", content: [{ type: "text", text }] } as any)
-          event.system.push({ type: "text", text } as any)
+          injectMemory(event as unknown as { messages: unknown[]; system: unknown[] }, text)
           log(cfg, `recalled ${hits.length} hits for ${identity}`)
         } catch (error) {
           warn(`recall failed for ${identity}: ${String(error)}`)

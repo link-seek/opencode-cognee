@@ -17,6 +17,15 @@ spec:
     spec:
       imagePullSecrets:
         - name: swr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: broker
           image: swr.cn-north-9.myhuaweicloud.com/link-seek/opencode-tools@sha256:a56f9ab62e0801133389c487adf56fce0ea1f72b0ca77cfb4db450351e8db2a7
@@ -24,8 +33,8 @@ spec:
           env:
             - {name: BROKER_PORT, value: "8787"}
             - {name: COGNEE_BASE_URL, value: "http://cognee.cognee-trial.svc.cluster.local:8001"}
-            - name: BROKER_TOKEN
-              valueFrom: {secretKeyRef: {name: cognee-broker-env, key: BROKER_TOKEN}}
+            - name: BROKER_TOKENS
+              valueFrom: {secretKeyRef: {name: cognee-broker-env, key: BROKER_TOKENS}}
             - name: COGNEE_USERS
               valueFrom: {secretKeyRef: {name: cognee-broker-env, key: COGNEE_USERS}}
           ports:
@@ -60,3 +69,31 @@ spec:
     app: cognee-token-broker
   ports:
     - {name: http, port: 8787, targetPort: 8787}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cognee-token-broker
+  namespace: cognee-trial
+  labels:
+    app: cognee-token-broker
+spec:
+  podSelector:
+    matchLabels:
+      app: cognee-token-broker
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - {port: 8787, protocol: TCP}
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: opencode-xieyucheng
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: opencode-yingxin
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: opencode-team
+  egress:
+    - {} # allow DNS + Cognee REST; tighten if egress policy exists

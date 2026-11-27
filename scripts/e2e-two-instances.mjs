@@ -14,6 +14,8 @@
  *   B[ying] ask for the secret   -> no xie memory (isolation)
  *   ying token reads xie dataset -> 403 (Cognee ACL)
  */
+import { datasetName, cogneeLogin as sharedLogin } from "./lib.mjs"
+
 const A = required("OC_A_URL").replace(/\/+$/, "")
 const A_PW = required("OC_A_PASSWORD")
 const B = required("OC_B_URL").replace(/\/+$/, "")
@@ -37,7 +39,7 @@ function auth(password) {
   return `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`
 }
 
-async function api(base, password, path, init = {}) {
+async function api(base, password, path, init = {}, { allow403 = false } = {}) {
   const res = await fetch(`${base}${path}`, {
     ...init,
     headers: {
@@ -54,7 +56,7 @@ async function api(base, password, path, init = {}) {
   } catch {
     body = { raw: text }
   }
-  if (!res.ok && res.status !== 403) throw new Error(`${path} ${res.status}: ${text.slice(0, 300)}`)
+  if (!res.ok && !(allow403 && res.status === 403)) throw new Error(`${path} ${res.status}: ${text.slice(0, 300)}`)
   return { status: res.status, body }
 }
 
@@ -106,23 +108,20 @@ async function waitAssistant(base, password, sessionID, timeoutMs = 180_000) {
 async function cogneeLogin(identity) {
   const creds = USERS[identity]
   if (!creds) throw new Error(`no creds for ${identity}`)
-  const res = await fetch(`${COGNEE}/api/v1/auth/login`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ username: creds.email, password: creds.password, grant_type: "password" }),
-    signal: AbortSignal.timeout(20_000),
-  })
-  if (!res.ok) throw new Error(`cognee login ${identity} ${res.status}`)
-  return (await res.json()).access_token
+  return sharedLogin(COGNEE, creds.email, creds.password)
 }
 
 async function datasetId(token, identity) {
+  const name = datasetName(identity, "u_")
   const res = await fetch(`${COGNEE}/api/v1/datasets`, {
     headers: { authorization: `Bearer ${token}` },
     signal: AbortSignal.timeout(20_000),
   })
+  if (!res.ok) throw new Error(`list datasets ${res.status}`)
   const list = await res.json()
-  return list.find((d) => d.name === `u_${identity}`)?.id
+  const id = list.find((d) => d.name === name)?.id
+  if (!id) throw new Error(`dataset ${name} not found; provision it before running E2E`)
+  return id
 }
 
 async function recall(token, ds, query) {
@@ -133,7 +132,13 @@ async function recall(token, ds, query) {
     signal: AbortSignal.timeout(60_000),
   })
   const text = await res.text()
-  return { status: res.status, body: text ? JSON.parse(text) : [] }
+  let body
+  try {
+    body = text ? JSON.parse(text) : []
+  } catch {
+    body = []
+  }
+  return { status: res.status, body }
 }
 
 async function waitDatasetReady(token, ds, timeoutMs = 240_000) {
@@ -156,7 +161,7 @@ function check(name, ok, detail = "") {
 }
 
 async function main() {
-  console.log(`secret=${SECRET}`)
+  console.log("secret=<redacted>")
   const xieToken = await cogneeLogin("xieyucheng")
   const e2eToken = await cogneeLogin("e2e")
   const yingToken = await cogneeLogin("yingxin")
@@ -214,7 +219,7 @@ async function main() {
   check("B[ying] isolated from xie memory", !b2.includes(SECRET), b2.slice(0, 120))
 
   // 5. Direct Cognee ACL: ying cannot read xie's dataset by id.
-  const denied = await recall(yingToken, xieDs, SECRET)
+  const denied = await recall(yingToken, xieDs, "deployment")
   check("ying token reading xie dataset denied", denied.status === 403, `HTTP ${denied.status}`)
 
   // 6. And ying can read its own dataset.

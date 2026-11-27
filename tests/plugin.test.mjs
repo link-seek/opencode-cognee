@@ -75,6 +75,8 @@ function startFakeCognee() {
 
     if (req.method === "POST" && url.pathname === "/api/v1/recall") {
       const payload = JSON.parse(body.toString() || "{}")
+      // Test hook: deterministic ACL denial independent of dataset state.
+      if (payload.query === "forbidden") return json(res, 403, { detail: "PermissionDeniedError: [read]" })
       const ids = payload.datasetIds ?? []
       for (const id of ids) {
         const ds = datasets.get(id)
@@ -385,5 +387,129 @@ test("plugin: tools never accept an identity argument", async () => {
     assert.ok(!props.includes("user_id"))
     assert.ok(!props.includes("identity"))
     assert.ok(!props.includes("datasetId"))
+  }
+})
+
+test("client: opaque broker token without expiresAt is cached (single broker hit)", async () => {
+  const fake = await startFakeCognee()
+  const brokerCalls = []
+  const broker = createServer(async (req, res) => {
+    const chunks = []
+    for await (const c of req) chunks.push(c)
+    brokerCalls.push(Buffer.concat(chunks).toString())
+    res.writeHead(200, { "content-type": "application/json" })
+    res.end(JSON.stringify({ token: "opaque-token" })) // no expiresAt, no JWT exp
+  })
+  await new Promise((r) => broker.listen(0, "127.0.0.1", r))
+  try {
+    // Route the stub broker at the fake Cognee: login must never be called.
+    const cfg = cfgFor(fake.port, {
+      COGNEE_BROKER_URL: `http://127.0.0.1:${broker.address().port}`,
+      COGNEE_BROKER_TOKEN: "broker-secret",
+      COGNEE_USERS: "{}",
+    })
+    fake.tokens.set("opaque-token", "xieyucheng")
+    const client = new CogneeClient(cfg, "xieyucheng")
+    await client.ensureDataset()
+    client.dropDataset()
+    await client.recall("k3s", 5)
+    assert.equal(brokerCalls.length, 1)
+    assert.equal(fake.calls.filter((c) => c.path === "/api/v1/auth/login").length, 0)
+  } finally {
+    broker.close()
+    fake.server.close()
+  }
+})
+
+test("client: 401 refresh rebuilds the FormData body", async () => {
+  const bodies = []
+  let remembers = 0
+  const server = createServer(async (req, res) => {
+    const chunks = []
+    for await (const c of req) chunks.push(c)
+    const url = new URL(req.url, "http://x")
+    const json = (status, body) => {
+      res.writeHead(status, { "content-type": "application/json" })
+      res.end(JSON.stringify(body))
+    }
+    if (url.pathname === "/api/v1/auth/login") return json(200, { access_token: "tok-1", token_type: "bearer" })
+    if (url.pathname === "/api/v1/datasets") return json(200, [{ id: "d1", name: "u_xieyucheng" }])
+    if (url.pathname === "/api/v1/remember") {
+      remembers++
+      bodies.push(Buffer.concat(chunks).toString())
+      if (remembers === 1) return json(401, { detail: "expired" })
+      return json(200, { status: "running" })
+    }
+    return json(404, {})
+  })
+  await new Promise((r) => server.listen(0, "127.0.0.1", r))
+  try {
+    const cfg = cfgFor(server.address().port)
+    const client = new CogneeClient(cfg, "xieyucheng")
+    await client.remember("hello-memory-marker", ["episode"])
+    assert.equal(remembers, 2)
+    assert.match(bodies[1], /hello-memory-marker/)
+  } finally {
+    server.close()
+  }
+})
+
+test("client: repeated 403 does not open the breaker", async () => {
+  const fake = await startFakeCognee()
+  try {
+    const cfg = cfgFor(fake.port)
+    const client = new CogneeClient(cfg, "xieyucheng")
+    for (let i = 0; i < 3; i++) {
+      await assert.rejects(client.recall("forbidden", 5), /403/)
+    }
+    // A healthy call must still go through: the circuit must be closed.
+    const hits = await client.recall("nothing", 5)
+    assert.deepEqual(hits, [])
+  } finally {
+    fake.server.close()
+  }
+})
+
+test("renderMemory respects maxChars including the header", async () => {
+  const text = renderMemory([{ text: "a".repeat(500) }], 200)
+  assert.ok(text.length <= 200)
+  assert.match(text, /长期记忆/)
+})
+
+test("recall cache: rebound session never sees the previous identity's text", async () => {
+  const fake = await startFakeCognee()
+  fake.seeds.set("xieyucheng", "alice-dark-mode-secret")
+  let current = "xieyucheng"
+  const host = fakeHost({})
+  host.ctx.session.instructions.entry.list = async () => [{ key: "auth.user_id", value: current }]
+  try {
+    await loadPluginWithHost(host, fake.port)
+    const query = "还记得 k3s 吗"
+    const e1 = { sessionID: "rebound", system: [], messages: [{ role: "user", content: query }] }
+    await host.hooks.context(e1)
+    assert.ok(JSON.stringify(e1).includes("alice-dark-mode-secret"))
+    current = "yingxin" // rebind the same session to another tenant
+    await new Promise((r) => setTimeout(r, 5_100)) // outlive the 5s identity cache
+    const e2 = { sessionID: "rebound", system: [], messages: [{ role: "user", content: query }] }
+    await host.hooks.context(e2)
+    assert.ok(!JSON.stringify(e2).includes("alice-dark-mode-secret"))
+    assert.ok(fake.calls.some((c) => c.path === "/api/v1/recall" && c.who === "yingxin"))
+  } finally {
+    fake.server.close()
+  }
+})
+
+test("capture: concurrent idle hooks store a single episode", async () => {
+  const fake = await startFakeCognee()
+  const host = fakeHost({ identity: "yingxin" })
+  try {
+    await loadPluginWithHost(host, fake.port)
+    await Promise.all([
+      host.hooks["experimental.idle"]({ sessionID: "race", background: [] }),
+      host.hooks["experimental.idle"]({ sessionID: "race", background: [] }),
+    ])
+    assert.equal(fake.memories.length, 1)
+  } finally {
+    fake.server.close()
   }
 })

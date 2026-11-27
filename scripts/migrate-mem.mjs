@@ -7,7 +7,7 @@
  *     --dir /path/to/opencode-mem \
  *     --identity xieyucheng \
  *     --base-url http://cognee.cognee-trial.svc.cluster.local:8001 \
- *     --email xieyucheng@link-seek.dev --password '...' \
+ *     --email xieyucheng@link-seek.dev --password-env COGNEE_PW_XIE \
  *     [--batch 40] [--limit 0] [--dry-run] [--delay-ms 500] \
  *     [--state ./migration-xieyucheng.json] [--jsonl ./legacy-xieyucheng.jsonl] \
  *     [--profile-user xieyucheng@outlook.com]
@@ -16,53 +16,41 @@
  * Every memory keeps its id as an HTML comment so re-runs can be audited.
  * Imported ids are recorded in the state file; re-running skips them.
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from "node:fs"
-import { join, basename } from "node:path"
+import { join, basename, dirname } from "node:path"
 import { createHash } from "node:crypto"
+import { readFileSync, existsSync, writeFileSync, readdirSync, mkdirSync, statSync } from "node:fs"
 import { DatabaseSync } from "node:sqlite"
-
-const args = process.argv.slice(2)
-function arg(name, dflt) {
-  const i = args.indexOf(`--${name}`)
-  if (i >= 0 && i + 1 < args.length) return args[i + 1]
-  return dflt
-}
-function flag(name) {
-  return args.includes(`--${name}`)
-}
-function required(name) {
-  const value = arg(name)
-  if (!value) {
-    console.error(`missing --${name}`)
-    process.exit(2)
-  }
-  return value
-}
+import {
+  arg,
+  flag,
+  required,
+  num,
+  scrub,
+  datasetName,
+  cogneeLogin,
+  apiAuthed,
+  ensureDataset as ensureCogneeDataset,
+  rememberForm,
+} from "./lib.mjs"
 
 const dir = required("dir")
 const identity = required("identity")
 const baseUrl = required("base-url").replace(/\/+$/, "")
 const email = required("email")
 const passwordEnv = arg("password-env")
-const password = arg("password") || (passwordEnv ? process.env[passwordEnv] : undefined) || required("password")
-const batchSize = Number(arg("batch", "40"))
-const limit = Number(arg("limit", "0"))
-const delayMs = Number(arg("delay-ms", "500"))
-const maxPending = Number(arg("max-pending", "3"))
-const queueTimeoutMs = Number(arg("queue-timeout", "900")) * 1000
+const password = (passwordEnv ? process.env[passwordEnv] : undefined) ?? (() => {
+  console.error("missing Cognee password: use --password-env <ENV_VAR> (the --password flag was removed: it leaks via ps)")
+  process.exit(2)
+})()
+const batchSize = num("batch", 40, { min: 1 })
+const limit = num("limit", 0)
+const delayMs = num("delay-ms", 500)
+const maxPending = num("max-pending", 3)
+const queueTimeoutMs = num("queue-timeout", 900, { min: 1 }) * 1000
 const dryRun = flag("dry-run")
 const statePath = arg("state", `./migration-${identity}.json`)
 const jsonlPath = arg("jsonl", "")
-const profileUsers = args.flatMap((a, i) => (a === "--profile-user" ? [args[i + 1]] : [])).filter(Boolean)
-
-function scrub(text) {
-  return String(text ?? "")
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]")
-    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED JWT]")
-    .replace(/(api[_-]?key|token|secret|password|passwd|pwd|auth|bearer|access[_-]?key|密码|口令)\s*[:：=]\s*['"]?[^\s'"'"'，。]+/gi, "$1=[REDACTED]")
-    .replace(/\b(AKIA|SK|ghp_|gho_|ghu_|xox[abp]|sk-)[A-Za-z0-9_\-]{12,}\b/g, "[REDACTED]")
-    .replace(/\b(root|admin|administrator)\s*[/:：]\s*[^\s,，。;；]+/gi, "$1/[REDACTED]")
-}
+const profileUsers = process.argv.slice(2).flatMap((a, i, all) => (a === "--profile-user" ? [all[i + 1]] : [])).filter(Boolean)
 
 function openDb(path) {
   return new DatabaseSync(path, { readOnly: true })
@@ -175,45 +163,13 @@ function batches(items, size, charBudget) {
   return out
 }
 
-async function login() {
-  const res = await fetch(`${baseUrl}/api/v1/auth/login`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ username: email, password, grant_type: "password" }),
-    signal: AbortSignal.timeout(20_000),
-  })
-  if (!res.ok) throw new Error(`login ${res.status}: ${(await res.text()).slice(0, 300)}`)
-  return (await res.json()).access_token
-}
-
-async function api(path, token, init = {}) {
-  const headers = new Headers(init.headers)
-  headers.set("authorization", `Bearer ${token}`)
-  const res = await fetch(`${baseUrl}${path}`, { ...init, headers, signal: AbortSignal.timeout(180_000) })
-  if (!res.ok) throw new Error(`${init.method ?? "GET"} ${path} ${res.status}: ${(await res.text()).slice(0, 400)}`)
-  return res
-}
-
-async function ensureDataset(token) {
-  const name = `u_${identity.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`
-  const listed = await (await api("/api/v1/datasets", token)).json()
-  const found = listed.find((d) => d.name === name)
-  if (found) return found.id
-  const created = await (
-    await api("/api/v1/datasets", token, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name }),
-    })
-  ).json()
-  return created.id
-}
+const login = () => cogneeLogin(baseUrl, email, password)
+const ensureDataset = (token) => ensureCogneeDataset(baseUrl, token, datasetName(identity, "u_"))
 
 async function waitForQueue(token, datasetId) {
   const deadline = Date.now() + queueTimeoutMs
   for (;;) {
-    const res = await api(`/api/v1/datasets/${datasetId}/processing-status`, token)
-    const status = await res.json()
+    const status = await apiAuthed(baseUrl, token, `/api/v1/datasets/${datasetId}/processing-status`, {}, 30_000)
     const pending = Number(status.pending ?? 0)
     if (pending <= maxPending) return
     if (Date.now() > deadline) {
@@ -226,22 +182,23 @@ async function waitForQueue(token, datasetId) {
 }
 
 async function remember(token, datasetId, text, nodeSets) {
-  const form = new FormData()
-  form.append("raw_data", text)
-  form.append("datasetId", datasetId)
-  for (const tag of nodeSets) form.append("node_set", tag)
-  form.append("self_improvement", "false")
-  form.append("run_in_background", "true")
-  await api("/api/v1/remember", token, { method: "POST", body: form })
+  await apiAuthed(baseUrl, token, "/api/v1/remember", { method: "POST", body: rememberForm(datasetId, text, nodeSets) }, 180_000)
 }
 
 function loadState() {
   if (!existsSync(statePath)) return { imported: [] }
+  let parsed
   try {
-    return JSON.parse(readFileSync(statePath, "utf8"))
-  } catch {
-    return { imported: [] }
+    parsed = JSON.parse(readFileSync(statePath, "utf8"))
+  } catch (error) {
+    console.error(`state file ${statePath} is not valid JSON: ${String(error)}`)
+    process.exit(2)
   }
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.imported)) {
+    console.error(`state file ${statePath} is corrupt: expected {"imported": [...]}`)
+    process.exit(2)
+  }
+  return parsed
 }
 
 async function main() {
@@ -263,8 +220,10 @@ async function main() {
   const docs = []
   if (profiles.length > 0) {
     for (const profile of profiles) {
+      const id = `profile:${profile.user_id}`
+      if (imported.has(id)) continue // idempotent: profiles are skipped like memories
       const text = renderProfile(profile)
-      if (text) docs.push({ kind: "profile", text, id: `profile:${profile.user_id}` })
+      if (text) docs.push({ kind: "profile", text, id })
     }
   }
   for (const batch of batches(memories, batchSize, 12_000)) {
@@ -288,7 +247,7 @@ async function main() {
   }
 
   if (jsonlPath) {
-    mkdirSync(join(jsonlPath, ".."), { recursive: true })
+    mkdirSync(dirname(jsonlPath), { recursive: true })
     const lines = docs.map((d) => JSON.stringify(d)).join("\n")
     writeFileSync(jsonlPath, lines + "\n")
     console.log(`wrote ${jsonlPath}`)

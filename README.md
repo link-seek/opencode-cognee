@@ -47,7 +47,9 @@ COGNEE_USERS='{"xieyucheng":{"email":"xieyucheng@link-seek.dev","password":"..."
 | Variable | Default | Meaning |
 |---|---|---|
 | `COGNEE_BASE_URL` | `http://cognee.cognee-trial.svc.cluster.local:8001` | Cognee REST base URL (no `/api` suffix). |
-| `COGNEE_USERS` | `{}` | JSON map `identity -> {email,password}` authorized on this OpenCode instance. |
+| `COGNEE_USERS` | `{}` | Direct-login credentials (single-user/local only). **Ignored with a warning in broker mode.** |
+| `COGNEE_BROKER_URL` | empty | Token broker base URL. When set, pods hold only `COGNEE_BROKER_TOKEN`. |
+| `COGNEE_BROKER_TOKEN` | empty | Per-identity broker token (broker binds it to one identity). |
 | `COGNEE_DEFAULT_USER` | empty | Fallback identity when a session has no `auth.user_id` entry. Leave empty for multi-user. |
 | `COGNEE_ALLOW_DEFAULT_IDENTITY` | `true` iff default user is set | Explicitly allow the fallback; set `0` in shared instances. |
 | `COGNEE_IDENTITY_KEY` | `auth.user_id` | Instruction entry key carrying the SSO subject. |
@@ -57,7 +59,7 @@ COGNEE_USERS='{"xieyucheng":{"email":"xieyucheng@link-seek.dev","password":"..."
 | `COGNEE_RECALL_EVERY_TURN` | `false` | Recall on every user turn (cost trade-off). |
 | `COGNEE_IDLE_DEBOUNCE_MS` | `120000` | Minimum gap between captures in one session. |
 | `COGNEE_MIN_TRANSCRIPT_CHARS` | `240` | Skip trivial sessions. |
-| `COGNEE_TIMEOUT_MS` | `15000` | Per-request timeout (remember uses a longer timeout). |
+| `COGNEE_TIMEOUT_MS` | `15000` | Per-request timeout (remember uses 150s, recall 20s). |
 | `COGNEE_MAX_INJECT_CHARS` | `4000` | Recall injection budget. |
 | `COGNEE_MAX_TRANSCRIPT_CHARS` | `24000` | Transcript budget for distillation. |
 | `COGNEE_DEBUG` | `false` | Verbose logs (never logs secrets). |
@@ -73,9 +75,12 @@ identity "yingxin"    -> Cognee user yingxin@...    -> dataset u_yingxin
 - Dataset names are sanitized (`^[a-z0-9_-]`, max 64 chars) so an identity cannot escape its prefix.
 - The plugin caches the dataset UUID per identity and always passes `datasetId` to
   remember/recall. Shared datasets (team/org) are intentionally not read in this version.
-- `COGNEE_USERS` is an MVP credential map. For a shared multi-user instance, replace it with
-  a token broker that maps the SSO subject to a short-lived Cognee JWT; do not distribute all
-  users' passwords to every pod.
+- The token broker (`deploy/token-broker.yaml`, `broker/token-broker.mjs`) maps an identity to a
+  Cognee user and returns a cached JWT. **Use per-identity broker tokens** (`BROKER_TOKENS`
+  JSON map `identity -> token`; each pod's Secret holds only its own): the broker rejects a
+  token presented for any other identity, so a leaked pod token cannot mint another tenant's
+  JWT. The legacy single `BROKER_TOKEN` still works but is deprecated. Direct `COGNEE_USERS`
+  remains as a local/single-user fallback and is ignored (with a warning) in broker mode.
 
 ## Migration from opencode-mem
 
@@ -88,7 +93,7 @@ node scripts/migrate-mem.mjs \
   --dir /path/to/opencode-mem \
   --identity xieyucheng \
   --base-url http://cognee.cognee-trial.svc.cluster.local:8001 \
-  --email xieyucheng@link-seek.dev --password '...' \
+  --email xieyucheng@link-seek.dev --password-env COGNEE_PW_XIE \
   --batch 40 --delay-ms 500 \
   --state ./migration-xieyucheng.json \
   --jsonl ./legacy-xieyucheng.jsonl
@@ -103,7 +108,7 @@ Provision users and datasets before migrating:
 ```bash
 node scripts/provision-users.mjs \
   --base-url http://cognee.cognee-trial.svc.cluster.local:8001 \
-  --users '{"xieyucheng":{"email":"xieyucheng@link-seek.dev","password":"..."}}'
+  --users-file ./cognee-users.json   # JSON map, 0600; never pass passwords on the CLI
 ```
 
 ## Development
