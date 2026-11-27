@@ -28,7 +28,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: broker
-          image: swr.cn-north-9.myhuaweicloud.com/link-seek/opencode-tools@sha256:a56f9ab62e0801133389c487adf56fce0ea1f72b0ca77cfb4db450351e8db2a7
+          image: swr.cn-north-9.myhuaweicloud.com/link-seek/opencode-tools@sha256:51f75e112b2cdd3168dbcf565096af0dadbe60cc4d067947bb0b0697a1723d5f
           command: ["node", "/app/token-broker.mjs"]
           env:
             - {name: BROKER_PORT, value: "8787"}
