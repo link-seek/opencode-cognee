@@ -20,16 +20,17 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        capabilities:
-          drop: [ALL]
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: broker
           image: swr.cn-north-9.myhuaweicloud.com/link-seek/opencode-tools@sha256:51f75e112b2cdd3168dbcf565096af0dadbe60cc4d067947bb0b0697a1723d5f
           command: ["node", "/app/token-broker.mjs"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           env:
             - {name: BROKER_PORT, value: "8787"}
             - {name: COGNEE_BASE_URL, value: "http://cognee.cognee-trial.svc.cluster.local:8001"}
